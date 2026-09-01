@@ -5,8 +5,17 @@ import { asc, eq } from 'drizzle-orm'
 import Papa from 'papaparse'
 import ExcelJS from 'exceljs'
 import { getDb } from '../db/client'
-import { courses, instructors, meetingOverrides, meetingTimes, rooms, sections, terms } from '../db/schema'
-import { daysToStr, getSettings, listSectionsFull, parseUnavailable, saveSettings, mapTerm, listOverrides } from './catalog'
+import { classes, lessons, meetingOverrides, subjects, teachers, terms } from '../db/schema'
+import {
+  daysToStr,
+  getSettings,
+  listLessonsFull,
+  parseSubjectIds,
+  parseUnavailable,
+  saveSettings,
+  mapTerm,
+  listOverrides
+} from './catalog'
 import { seedSampleData } from '../seed'
 import { daysToLabel, fromHHMM, parseDays, toHHMM } from '@shared/time'
 import { occurrencesForWeek, weekStart, addDays } from '@shared/weeks'
@@ -41,52 +50,52 @@ export function registerIoIpc(): void {
     const termRow = db.select().from(terms).where(eq(terms.id, termId)).get()
     if (!termRow) throw new Error('Term not found')
     const term = mapTerm(termRow)
-    const sectionRows = listSectionsFull(termId)
-    const overrideRows = listOverrides(termId)
-    const insRows = db.select().from(instructors).all()
-    const roomRows = db.select().from(rooms).all()
-    const insById = new Map(insRows.map((i) => [i.id, i]))
-    const roomById = new Map(roomRows.map((r) => [r.id, r]))
-    const sectionById = new Map(sectionRows.map((s) => [s.id, s]))
+    const lessonRows = listLessonsFull(termId)
+    const teacherRows = db.select().from(teachers).all()
+    const teacherById = new Map(teacherRows.map((t) => [t.id, t]))
     const payload = {
-      version: 2,
+      version: 3,
       exportedAt: new Date().toISOString(),
       term: { name: term.name, weeks: term.weeks, startDate: term.startDate, breakWeeks: term.breakWeeks },
       settings: getSettings(),
-      instructors: insRows,
-      rooms: roomRows,
-      courses: db
+      teachers: teacherRows.map((t) => ({
+        name: t.name,
+        email: t.email,
+        maxWeeklyHours: t.maxWeeklyHours,
+        unavailable: parseUnavailable(t.unavailable),
+        subjectCodes: parseSubjectIds(t.subjectIds).map((sid) => lessonRows.find((l) => l.subjectId === sid)?.subjectCode ?? '')
+      })),
+      subjects: db
         .select()
-        .from(courses)
-        .where(eq(courses.termId, termId))
-        .orderBy(asc(courses.code))
+        .from(subjects)
+        .where(eq(subjects.termId, termId))
+        .orderBy(asc(subjects.code))
+        .all()
+        .map((s) => ({ code: s.code, title: s.title })),
+      classes: db
+        .select()
+        .from(classes)
+        .where(eq(classes.termId, termId))
+        .orderBy(asc(classes.name))
         .all()
         .map((c) => ({
-          code: c.code,
-          title: c.title,
-          credits: c.credits,
-          sections: db
-            .select()
-            .from(sections)
-            .where(eq(sections.courseId, c.id))
-            .orderBy(asc(sections.number))
-            .all()
-            .map((s) => ({
-              number: s.number,
-              capacity: s.capacity,
-              sessionsPerWeek: s.sessionsPerWeek,
-              durationMinutes: s.durationMinutes,
-              instructorId: s.instructorId,
-              roomId: s.roomId,
-              locked: s.locked === 1,
-              meetings: db
-                .select()
-                .from(meetingTimes)
-                .where(eq(meetingTimes.sectionId, s.id))
-                .all()
-                .map((m) => ({ days: m.days.split(',').filter(Boolean).map(Number), start: m.startMinute, end: m.endMinute })),
-              overrides: overrideRows
-                .filter((o) => o.sectionId === s.id)
+          name: c.name,
+          grade: c.grade,
+          capacity: c.capacity,
+          homeroom: c.homeroom,
+          lessons: lessonRows
+            .filter((l) => l.classId === c.id)
+            .map((l) => ({
+              subjectCode: l.subjectCode,
+              sessionsPerWeek: l.sessionsPerWeek,
+              durationMinutes: l.durationMinutes,
+              teacherEmail: l.teacherId !== null ? teacherById.get(l.teacherId)?.email ?? '' : '',
+              locked: l.locked,
+              days: l.meetings[0]?.days ?? [],
+              start: l.meetings[0]?.start ?? null,
+              end: l.meetings[0]?.end ?? null,
+              overrides: listOverrides(termId)
+                .filter((o) => o.lessonId === l.id)
                 .map((o) => ({
                   week: o.week,
                   kind: o.kind,
@@ -94,15 +103,12 @@ export function registerIoIpc(): void {
                   toDay: o.toDay,
                   start: o.start,
                   end: o.end,
-                  instructorEmail:
-                    o.instructorId !== null ? insById.get(o.instructorId)?.email ?? '' : '',
-                  roomName: o.roomId !== null ? roomById.get(o.roomId)?.name ?? '' : '',
+                  teacherEmail: o.teacherId !== null ? teacherById.get(o.teacherId)?.email ?? '' : '',
                   note: o.note
                 }))
             }))
         }))
     }
-    void sectionById
     return saveText(`${term.name.replace(/[^\w-]+/g, '_')}.json`, JSON.stringify(payload, null, 2))
   })
 
@@ -121,7 +127,9 @@ export function registerIoIpc(): void {
     const { readFile } = await import('fs/promises')
     const text = await readFile(res.filePaths[0], 'utf-8')
     const data = JSON.parse(text)
-    if (!data || !data.term || !Array.isArray(data.courses)) throw new Error('Invalid schedule JSON file')
+    if (!data || !data.term || !Array.isArray(data.classes) || !Array.isArray(data.subjects)) {
+      throw new Error('Invalid schedule JSON file')
+    }
     const db = getDb()
     const termName = `${String(data.term.name ?? 'Imported')} (Imported ${new Date().toLocaleDateString()})`
     const term = db
@@ -129,126 +137,132 @@ export function registerIoIpc(): void {
       .values({
         name: termName,
         createdAt: Date.now(),
-        weeks: num(data.term.weeks, 14),
+        weeks: num(data.term.weeks, 18),
         startDate: String(data.term.startDate ?? ''),
         breakWeeks: JSON.stringify(Array.isArray(data.term.breakWeeks) ? data.term.breakWeeks : [])
       })
       .returning()
       .get()
 
-    const insByEmailOrName = new Map<string, number>()
-    for (const i of data.instructors ?? []) {
-      const key = String(i.email || i.name).toLowerCase()
-      const existing = db.select().from(instructors).all().find((r) => (r.email || r.name).toLowerCase() === key)
-      const id = existing
-        ? existing.id
-        : db
-            .insert(instructors)
-            .values({
-              name: String(i.name),
-              email: String(i.email ?? ''),
-              maxWeeklyHours: num(i.maxWeeklyHours, 12),
-              unavailable: JSON.stringify(
-                Array.isArray(i.unavailable) ? i.unavailable : parseUnavailable(String(i.unavailable ?? '[]'))
-              )
-            })
-            .returning()
-            .get().id
-      insByEmailOrName.set(key, id)
-    }
-    const roomByName = new Map<string, number>()
-    for (const r of data.rooms ?? []) {
-      const name = String(r.name)
-      const existing = db.select().from(rooms).all().find((x) => x.name === name)
-      const id = existing
-        ? existing.id
-        : db
-            .insert(rooms)
-            .values({
-              name,
-              building: String(r.building ?? ''),
-              capacity: num(r.capacity, 0),
-              travelGroup: String(r.travelGroup ?? 'A')
-            })
-            .returning()
-            .get().id
-      roomByName.set(name, id)
+    const subjectByCode = new Map<string, number>()
+    for (const s of data.subjects) {
+      const code = String(s.code)
+      const row = db.insert(subjects).values({ termId: term.id, code, title: String(s.title ?? '') }).returning().get()
+      subjectByCode.set(code, row.id)
     }
 
-    let sectionCount = 0
-    const sectionKeyToId = new Map<string, number>()
-    const pendingOverrides: { sectionKey: string; row: Record<string, unknown> }[] = []
-    for (const c of data.courses) {
-      const course = db
-        .insert(courses)
-        .values({ termId: term.id, code: String(c.code), title: String(c.title), credits: num(c.credits, 3) })
-        .returning()
-        .get()
-      for (const s of c.sections ?? []) {
-        const section = db
-          .insert(sections)
+    const teacherByEmailOrName = new Map<string, number>()
+    const teacherSubjectIds = new Map<number, number[]>()
+    for (const tRaw of data.teachers ?? []) {
+      const key = String(tRaw.email || tRaw.name).toLowerCase()
+      const existing = db.select().from(teachers).all().find((r) => (r.email || r.name).toLowerCase() === key)
+      const subjectIds = (Array.isArray(tRaw.subjectCodes) ? tRaw.subjectCodes : [])
+        .map((c: unknown) => subjectByCode.get(String(c)))
+        .filter((x: number | undefined): x is number => x !== undefined)
+      let id: number
+      if (existing) {
+        id = existing.id
+        const merged = [...new Set([...parseSubjectIds(existing.subjectIds), ...subjectIds])]
+        teacherSubjectIds.set(id, merged)
+        db.update(teachers)
+          .set({
+            name: String(tRaw.name),
+            email: String(tRaw.email ?? ''),
+            maxWeeklyHours: num(tRaw.maxWeeklyHours, 12),
+            unavailable: JSON.stringify(Array.isArray(tRaw.unavailable) ? tRaw.unavailable : []),
+            subjectIds: JSON.stringify(merged)
+          })
+          .where(eq(teachers.id, id))
+          .run()
+      } else {
+        const row = db
+          .insert(teachers)
           .values({
-            courseId: course.id,
-            number: String(s.number),
-            capacity: num(s.capacity, 0),
-            sessionsPerWeek: num(s.sessionsPerWeek, 2),
-            durationMinutes: num(s.durationMinutes, 75),
-            instructorId:
-              s.instructorId !== null && s.instructorId !== undefined
-                ? insByEmailOrName.get(String(s.instructorId)) ?? null
-                : null,
-            roomId: s.roomId !== null && s.roomId !== undefined ? roomByName.get(String(s.roomId)) ?? null : null,
-            locked: bool(s.locked) ? 1 : 0
+            name: String(tRaw.name),
+            email: String(tRaw.email ?? ''),
+            maxWeeklyHours: num(tRaw.maxWeeklyHours, 12),
+            unavailable: JSON.stringify(Array.isArray(tRaw.unavailable) ? tRaw.unavailable : []),
+            subjectIds: JSON.stringify(subjectIds)
           })
           .returning()
           .get()
-        sectionCount++
-        const key = `${String(c.code)}-${String(s.number)}`
-        sectionKeyToId.set(key, section.id)
-        for (const m of s.meetings ?? []) {
-          if (!Array.isArray(m.days)) continue
-          db.insert(meetingTimes)
-            .values({
-              sectionId: section.id,
-              days: daysToStr(m.days),
-              startMinute: num(m.start, 480),
-              endMinute: num(m.end, 540)
-            })
-            .run()
-        }
-        for (const o of s.overrides ?? []) {
-          pendingOverrides.push({ sectionKey: key, row: o })
+        id = row.id
+        teacherSubjectIds.set(id, subjectIds)
+      }
+      teacherByEmailOrName.set(key, id)
+    }
+
+    let lessonCount = 0
+    const lessonKeyToId = new Map<string, number>()
+    const pendingOverrides: { lessonKey: string; row: Record<string, unknown> }[] = []
+    for (const c of data.classes) {
+      const cls = db
+        .insert(classes)
+        .values({
+          termId: term.id,
+          name: String(c.name),
+          grade: String(c.grade ?? ''),
+          capacity: num(c.capacity, 0),
+          homeroom: String(c.homeroom ?? '')
+        })
+        .returning()
+        .get()
+      for (const l of c.lessons ?? []) {
+        const subjectId = subjectByCode.get(String(l.subjectCode))
+        if (!subjectId) continue
+        const days = Array.isArray(l.days) ? l.days.map((d: unknown) => num(d, 1)).filter((d: number) => d >= 1 && d <= 7) : []
+        const start = l.start !== undefined && l.start !== null ? num(l.start, 510) : null
+        const end = l.end !== undefined && l.end !== null ? num(l.end, 550) : null
+        const teacherEmail = String(l.teacherEmail ?? '')
+        const lesson = db
+          .insert(lessons)
+          .values({
+            classId: cls.id,
+            subjectId,
+            sessionsPerWeek: num(l.sessionsPerWeek, 2),
+            durationMinutes: num(l.durationMinutes, 40),
+            teacherId: teacherEmail ? teacherByEmailOrName.get(teacherEmail.toLowerCase()) ?? null : null,
+            locked: bool(l.locked) ? 1 : 0,
+            days: start !== null && end !== null && days.length > 0 ? daysToStr(days) : '',
+            startMinute: start,
+            endMinute: end
+          })
+          .returning()
+          .get()
+        lessonCount++
+        const key = `${String(c.name)}-${String(l.subjectCode)}`
+        lessonKeyToId.set(key, lesson.id)
+        for (const o of l.overrides ?? []) {
+          pendingOverrides.push({ lessonKey: key, row: o })
         }
       }
     }
-    for (const { sectionKey, row } of pendingOverrides) {
-      const sectionId = sectionKeyToId.get(sectionKey)
-      if (!sectionId) continue
+    for (const { lessonKey, row } of pendingOverrides) {
+      const lessonId = lessonKeyToId.get(lessonKey)
+      if (!lessonId) continue
       const kind = String(row.kind)
       if (kind !== 'move' && kind !== 'cancel' && kind !== 'extra') continue
-      const insEmail = String(row.instructorEmail ?? '')
-      const roomName = String(row.roomName ?? '')
+      const teacherEmail = String(row.teacherEmail ?? '')
       db.insert(meetingOverrides)
         .values({
-          sectionId,
+          lessonId,
           week: num(row.week, 1),
           kind,
           fromDay: row.fromDay !== undefined && row.fromDay !== null ? num(row.fromDay, 1) : null,
           toDay: row.toDay !== undefined && row.toDay !== null ? num(row.toDay, 1) : null,
-          startMinute: row.start !== undefined && row.start !== null ? num(row.start, 540) : null,
-          endMinute: row.end !== undefined && row.end !== null ? num(row.end, 630) : null,
-          roomId: roomName ? roomByName.get(roomName) ?? null : null,
-          instructorId: insEmail ? insByEmailOrName.get(insEmail.toLowerCase()) ?? null : null,
+          startMinute: row.start !== undefined && row.start !== null ? num(row.start, 510) : null,
+          endMinute: row.end !== undefined && row.end !== null ? num(row.end, 550) : null,
+          teacherId: teacherEmail ? teacherByEmailOrName.get(teacherEmail.toLowerCase()) ?? null : null,
           note: String(row.note ?? '')
         })
         .run()
     }
     const importedMaxWeek = pendingOverrides.reduce((m, p) => Math.max(m, num(p.row.week, 1)), 0)
-    if (importedMaxWeek > num(data.term.weeks, 14)) {
+    if (importedMaxWeek > num(data.term.weeks, 18)) {
       db.update(terms).set({ weeks: importedMaxWeek }).where(eq(terms.id, term.id)).run()
     }
     if (data.settings) saveSettings({ ...getSettings(), ...data.settings })
-    return { termName, courses: data.courses.length, sections: sectionCount }
+    return { termName, classes: data.classes.length, lessons: lessonCount }
   })
 
   ipcMain.handle('io:exportExcel', async (_e, termId: number, scope: ExcelScope, week?: number) => {
@@ -256,9 +270,11 @@ export function registerIoIpc(): void {
     const termRow = db.select().from(terms).where(eq(terms.id, termId)).get()
     if (!termRow) throw new Error('Term not found')
     const term = mapTerm(termRow)
-    const sectionRows = listSectionsFull(termId)
+    const lessonRows = listLessonsFull(termId)
+    const teacherRows = db.select().from(teachers).all()
+    const teacherById = new Map(teacherRows.map((t) => [t.id, t.name]))
     const wb = new ExcelJS.Workbook()
-    wb.creator = 'Course Scheduler'
+    wb.creator = 'Class Scheduler'
 
     const styleHeader = (ws: ExcelJS.Worksheet) => {
       const row = ws.getRow(1)
@@ -282,141 +298,129 @@ export function registerIoIpc(): void {
       dayLabel: string
       start: number
       end: number
-      code: string
-      number: string
-      title: string
-      instructor: string
-      room: string
-      capacity: number
+      className: string
+      subjectCode: string
+      subjectTitle: string
+      teacher: string
+      homeroom: string
     }
 
     const patternRows: Row[] = []
-    for (const s of [...sectionRows].sort((a, b) => a.code.localeCompare(b.code) || a.number.localeCompare(b.number))) {
-      for (const m of s.meetings) {
+    for (const l of [...lessonRows].sort((a, b) => a.className.localeCompare(b.className) || a.subjectCode.localeCompare(b.subjectCode))) {
+      const cls = db.select().from(classes).where(eq(classes.id, l.classId)).get()
+      for (const m of l.meetings) {
         for (const d of [...m.days].sort((x, y) => x - y)) {
           patternRows.push({
             day: d,
-            dayLabel: ['','Mon','Tue','Wed','Thu','Fri','Sat','Sun'][d] ?? '',
+            dayLabel: ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][d] ?? '',
             start: m.start,
             end: m.end,
-            code: s.code,
-            number: s.number,
-            title: s.title,
-            instructor: s.instructorName ?? '',
-            room: s.roomName ?? '',
-            capacity: s.capacity
+            className: l.className,
+            subjectCode: l.subjectCode,
+            subjectTitle: l.subjectTitle,
+            teacher: l.teacherName ?? '',
+            homeroom: cls?.homeroom ?? ''
           })
         }
       }
     }
 
     const weekRowsFor = (week: number): Row[] => {
-      const insById = new Map(db.select().from(instructors).all().map((i) => [i.id, i.name]))
-      const roomById = new Map(db.select().from(rooms).all().map((r) => [r.id, r]))
-      const sectionById = new Map(sectionRows.map((s) => [s.id, s]))
+      const clsById = new Map(db.select().from(classes).all().map((c) => [c.id, c]))
+      const lessonById = new Map(lessonRows.map((l) => [l.id, l]))
       const rows: Row[] = []
-      for (const occ of occurrencesForWeek(sectionRows, listOverrides(termId), week)) {
+      for (const occ of occurrencesForWeek(lessonRows, listOverrides(termId), week)) {
         if (occ.cancelled) continue
-        const s = sectionById.get(occ.sectionId)
-        if (!s) continue
-        const room = occ.roomId !== null ? roomById.get(occ.roomId) : undefined
+        const l = lessonById.get(occ.lessonId)
+        if (!l) continue
         rows.push({
           day: occ.day,
           dayLabel: dayLabelWithDate(term, week, occ.day),
           start: occ.start,
           end: occ.end,
-          code: s.code,
-          number: s.number,
-          title: s.title,
-          instructor: occ.instructorId !== null ? insById.get(occ.instructorId) ?? '' : '',
-          room: room?.name ?? '',
-          capacity: s.capacity
+          className: l.className,
+          subjectCode: l.subjectCode,
+          subjectTitle: l.subjectTitle,
+          teacher: occ.teacherId !== null ? teacherById.get(occ.teacherId) ?? '' : '',
+          homeroom: clsById.get(l.classId)?.homeroom ?? ''
         })
       }
-      return rows.sort((a, b) => a.day - b.day || a.start - b.start || a.code.localeCompare(b.code))
+      return rows.sort((a, b) => a.day - b.day || a.start - b.start || a.className.localeCompare(b.className))
     }
 
-    const deptColumns = [
+    const schoolColumns = [
       { header: 'Day', key: 'day', width: 14 },
       { header: 'Start', key: 'start', width: 9 },
       { header: 'End', key: 'end', width: 9 },
-      { header: 'Course', key: 'course', width: 14 },
-      { header: 'Section', key: 'sec', width: 8 },
-      { header: 'Title', key: 'title', width: 32 },
-      { header: 'Instructor', key: 'instr', width: 20 },
-      { header: 'Room', key: 'room', width: 12 },
-      { header: 'Capacity', key: 'cap', width: 10 }
+      { header: 'Class', key: 'cls', width: 10 },
+      { header: 'Subject', key: 'subject', width: 12 },
+      { header: 'Title', key: 'title', width: 28 },
+      { header: 'Teacher', key: 'teacher', width: 20 },
+      { header: 'Homeroom', key: 'homeroom', width: 12 }
     ]
-    const addDeptSheet = (name: string, rows: Row[]) => {
+    const addSchoolSheet = (name: string, rows: Row[]) => {
       const ws = wb.addWorksheet(sheetName(name))
-      ws.columns = deptColumns
+      ws.columns = schoolColumns
       styleHeader(ws)
       for (const r of rows) {
         ws.addRow({
           day: r.dayLabel,
           start: toHHMM(r.start),
           end: toHHMM(r.end),
-          course: r.code,
-          sec: r.number,
-          title: r.title,
-          instr: r.instructor,
-          room: r.room,
-          cap: r.capacity
+          cls: r.className,
+          subject: r.subjectCode,
+          title: r.subjectTitle,
+          teacher: r.teacher,
+          homeroom: r.homeroom
         })
       }
     }
 
     const addGroupSheets = (rows: Row[]) => {
-      const byInstructor = new Map<string, Row[]>()
-      const byRoom = new Map<string, Row[]>()
+      const byClass = new Map<string, Row[]>()
+      const byTeacher = new Map<string, Row[]>()
       for (const r of rows) {
-        if (r.instructor) byInstructor.set(r.instructor, [...(byInstructor.get(r.instructor) ?? []), r])
-        if (r.room) byRoom.set(r.room, [...(byRoom.get(r.room) ?? []), r])
+        byClass.set(r.className, [...(byClass.get(r.className) ?? []), r])
+        if (r.teacher) byTeacher.set(r.teacher, [...(byTeacher.get(r.teacher) ?? []), r])
       }
-      for (const [name, rws] of byInstructor) {
+      const groupColumns = [
+        { header: 'Day', key: 'day', width: 14 },
+        { header: 'Start', key: 'start', width: 9 },
+        { header: 'End', key: 'end', width: 9 },
+        { header: 'Class', key: 'cls', width: 10 },
+        { header: 'Subject', key: 'subject', width: 12 },
+        { header: 'Teacher', key: 'teacher', width: 20 }
+      ]
+      for (const [name, rws] of byClass) {
         const ws = wb.addWorksheet(sheetName(name))
-        ws.columns = [
-          { header: 'Day', key: 'day', width: 14 },
-          { header: 'Start', key: 'start', width: 9 },
-          { header: 'End', key: 'end', width: 9 },
-          { header: 'Course', key: 'course', width: 14 },
-          { header: 'Section', key: 'sec', width: 8 },
-          { header: 'Room', key: 'room', width: 12 }
-        ]
+        ws.columns = groupColumns
         styleHeader(ws)
         rws.forEach((r) =>
-          ws.addRow({ day: r.dayLabel, start: toHHMM(r.start), end: toHHMM(r.end), course: r.code, sec: r.number, room: r.room })
+          ws.addRow({ day: r.dayLabel, start: toHHMM(r.start), end: toHHMM(r.end), cls: r.className, subject: r.subjectCode, teacher: r.teacher })
         )
       }
-      for (const [name, rws] of byRoom) {
+      for (const [name, rws] of byTeacher) {
         const ws = wb.addWorksheet(sheetName(name))
-        ws.columns = [
-          { header: 'Day', key: 'day', width: 14 },
-          { header: 'Start', key: 'start', width: 9 },
-          { header: 'End', key: 'end', width: 9 },
-          { header: 'Course', key: 'course', width: 14 },
-          { header: 'Section', key: 'sec', width: 8 },
-          { header: 'Instructor', key: 'instr', width: 20 }
-        ]
+        ws.columns = groupColumns
         styleHeader(ws)
         rws.forEach((r) =>
-          ws.addRow({ day: r.dayLabel, start: toHHMM(r.start), end: toHHMM(r.end), course: r.code, sec: r.number, instr: r.instructor })
+          ws.addRow({ day: r.dayLabel, start: toHHMM(r.start), end: toHHMM(r.end), cls: r.className, subject: r.subjectCode, teacher: r.teacher })
         )
       }
     }
 
     if (scope === 'pattern') {
-      addDeptSheet('Department', patternRows)
+      addSchoolSheet('School', patternRows)
       addGroupSheets(patternRows)
     } else if (scope === 'week' && typeof week === 'number') {
       const rows = weekRowsFor(week)
-      addDeptSheet(`W${String(week).padStart(2, '0')}`, rows)
+      addSchoolSheet(`W${String(week).padStart(2, '0')}`, rows)
       addGroupSheets(rows)
     } else {
-      addDeptSheet('Department', patternRows)
+      addSchoolSheet('School', patternRows)
       for (let w = 1; w <= term.weeks; w++) {
         if (term.breakWeeks.includes(w)) continue
-        addDeptSheet(`W${String(w).padStart(2, '0')}`, weekRowsFor(w))
+        addSchoolSheet(`W${String(w).padStart(2, '0')}`, weekRowsFor(w))
       }
     }
 
@@ -435,42 +439,41 @@ export function registerIoIpc(): void {
   ipcMain.handle('io:exportCsv', async (_e, entity: CsvEntity, termId: number) => {
     const db = getDb()
     let rows: Record<string, unknown>[] = []
-    if (entity === 'courses') {
-      rows = db.select().from(courses).where(eq(courses.termId, termId)).all().map((c) => ({
-        code: c.code,
-        title: c.title,
-        credits: c.credits
+    if (entity === 'subjects') {
+      rows = db.select().from(subjects).where(eq(subjects.termId, termId)).all().map((s) => ({
+        code: s.code,
+        title: s.title
       }))
-    } else if (entity === 'instructors') {
-      rows = db.select().from(instructors).all().map((i) => ({
-        name: i.name,
-        email: i.email,
-        maxWeeklyHours: i.maxWeeklyHours
+    } else if (entity === 'teachers') {
+      const subjectById = new Map(db.select().from(subjects).where(eq(subjects.termId, termId)).all().map((s) => [s.id, s.code]))
+      rows = db.select().from(teachers).all().map((t) => ({
+        name: t.name,
+        email: t.email,
+        maxWeeklyHours: t.maxWeeklyHours,
+        subjectCodes: parseSubjectIds(t.subjectIds)
+          .map((sid) => subjectById.get(sid) ?? '')
+          .filter(Boolean)
+          .join('|')
       }))
-    } else if (entity === 'rooms') {
-      rows = db.select().from(rooms).all().map((r) => ({
-        name: r.name,
-        building: r.building,
-        capacity: r.capacity,
-        travelGroup: r.travelGroup
+    } else if (entity === 'classes') {
+      rows = db.select().from(classes).where(eq(classes.termId, termId)).all().map((c) => ({
+        name: c.name,
+        grade: c.grade,
+        capacity: c.capacity,
+        homeroom: c.homeroom
       }))
     } else {
-      rows = listSectionsFull(termId).map((s) => {
-        const m = s.meetings[0]
-        return {
-          courseCode: s.code,
-          number: s.number,
-          capacity: s.capacity,
-          sessionsPerWeek: s.sessionsPerWeek,
-          durationMinutes: s.durationMinutes,
-          instructorEmail: db.select().from(instructors).all().find((i) => i.id === s.instructorId)?.email ?? '',
-          roomName: s.roomName ?? '',
-          days: m ? daysToLabel(m.days) : '',
-          start: m ? toHHMM(m.start) : '',
-          end: m ? toHHMM(m.end) : '',
-          locked: s.locked ? 'true' : 'false'
-        }
-      })
+      rows = listLessonsFull(termId).map((l) => ({
+        className: l.className,
+        subjectCode: l.subjectCode,
+        sessionsPerWeek: l.sessionsPerWeek,
+        durationMinutes: l.durationMinutes,
+        teacherEmail: db.select().from(teachers).all().find((t) => t.id === l.teacherId)?.email ?? '',
+        days: l.meetings[0] ? daysToLabel(l.meetings[0].days) : '',
+        start: l.meetings[0] ? toHHMM(l.meetings[0].start) : '',
+        end: l.meetings[0] ? toHHMM(l.meetings[0].end) : '',
+        locked: l.locked ? 'true' : 'false'
+      }))
     }
     return saveText(`${entity}.csv`, Papa.unparse(rows))
   })
@@ -482,26 +485,33 @@ export function registerIoIpc(): void {
     let imported = 0
     let updated = 0
 
-    if (entity === 'courses') {
+    if (entity === 'subjects') {
       for (const row of parsed.data) {
         const code = (row.code ?? '').trim()
         if (!code) continue
-        const existing = db.select().from(courses).where(eq(courses.termId, termId)).all().find((c) => c.code === code)
-        const values = { code, title: (row.title ?? '').trim(), credits: num(row.credits, 3) }
+        const existing = db.select().from(subjects).where(eq(subjects.termId, termId)).all().find((s) => s.code === code)
+        const values = { code, title: (row.title ?? '').trim() }
         if (existing) {
-          db.update(courses).set(values).where(eq(courses.id, existing.id)).run()
+          db.update(subjects).set(values).where(eq(subjects.id, existing.id)).run()
           updated++
         } else {
-          db.insert(courses).values({ ...values, termId }).run()
+          db.insert(subjects).values({ ...values, termId }).run()
           imported++
         }
       }
-    } else if (entity === 'instructors') {
+    } else if (entity === 'teachers') {
+      const subjectRows = db.select().from(subjects).where(eq(subjects.termId, termId)).all()
       for (const row of parsed.data) {
         const name = (row.name ?? '').trim()
         if (!name) continue
         const email = (row.email ?? '').trim()
-        const existing = db.select().from(instructors).all().find((i) => (email && i.email === email) || i.name === name)
+        const existing = db.select().from(teachers).all().find((t) => (email && t.email === email) || t.name === name)
+        const subjectIds = (row.subjectCodes ?? '')
+          .split(/[|,;]/)
+          .map((c) => c.trim())
+          .filter(Boolean)
+          .map((c) => subjectRows.find((s) => s.code.toLowerCase() === c.toLowerCase())?.id)
+          .filter((x): x is number => x !== undefined)
         const unavailable: { days: number[]; start: number; end: number }[] = []
         const uDays = parseDays(row.unavailDays ?? '')
         const uStart = fromHHMM(row.unavailStart ?? '')
@@ -513,79 +523,74 @@ export function registerIoIpc(): void {
           name,
           email,
           maxWeeklyHours: num(row.maxWeeklyHours, 12),
-          unavailable: JSON.stringify(unavailable)
+          unavailable: JSON.stringify(unavailable),
+          subjectIds: JSON.stringify(subjectIds)
         }
         if (existing) {
-          db.update(instructors).set(values).where(eq(instructors.id, existing.id)).run()
+          db.update(teachers).set(values).where(eq(teachers.id, existing.id)).run()
           updated++
         } else {
-          db.insert(instructors).values(values).run()
+          db.insert(teachers).values(values).run()
           imported++
         }
       }
-    } else if (entity === 'rooms') {
+    } else if (entity === 'classes') {
       for (const row of parsed.data) {
         const name = (row.name ?? '').trim()
         if (!name) continue
-        const existing = db.select().from(rooms).all().find((r) => r.name === name)
+        const existing = db.select().from(classes).where(eq(classes.termId, termId)).all().find((c) => c.name === name)
         const values = {
           name,
-          building: (row.building ?? '').trim(),
+          grade: (row.grade ?? '').trim(),
           capacity: num(row.capacity, 0),
-          travelGroup: (row.travelGroup ?? 'A').trim() || 'A'
+          homeroom: (row.homeroom ?? '').trim()
         }
         if (existing) {
-          db.update(rooms).set(values).where(eq(rooms.id, existing.id)).run()
+          db.update(classes).set(values).where(eq(classes.id, existing.id)).run()
           updated++
         } else {
-          db.insert(rooms).values(values).run()
+          db.insert(classes).values({ ...values, termId }).run()
           imported++
         }
       }
     } else {
-      const courseRows = db.select().from(courses).where(eq(courses.termId, termId)).all()
-      const instructorRows = db.select().from(instructors).all()
-      const roomRows = db.select().from(rooms).all()
+      const classRows = db.select().from(classes).where(eq(classes.termId, termId)).all()
+      const subjectRows = db.select().from(subjects).where(eq(subjects.termId, termId)).all()
+      const teacherRows = db.select().from(teachers).all()
       for (const row of parsed.data) {
-        const courseCode = (row.courseCode ?? '').trim()
-        const number = (row.number ?? '').trim()
-        const course = courseRows.find((c) => c.code === courseCode)
-        if (!course) {
-          errors.push(`Course "${courseCode}" not found (row ${parsed.data.indexOf(row) + 2})`)
+        const className = (row.className ?? '').trim()
+        const subjectCode = (row.subjectCode ?? '').trim()
+        const cls = classRows.find((c) => c.name === className)
+        const subject = subjectRows.find((s) => s.code === subjectCode)
+        if (!cls || !subject) {
+          errors.push(`Class "${className}" or subject "${subjectCode}" not found (row ${parsed.data.indexOf(row) + 2})`)
           continue
         }
-        const instructorEmail = (row.instructorEmail ?? '').trim()
-        const instructor = instructorEmail
-          ? instructorRows.find((i) => i.email === instructorEmail || i.name === instructorEmail)
-          : undefined
-        const roomName = (row.roomName ?? '').trim()
-        const room = roomName ? roomRows.find((r) => r.name === roomName) : undefined
-        const existing = db.select().from(sections).where(eq(sections.courseId, course.id)).all().find((s) => s.number === number)
+        const teacherEmail = (row.teacherEmail ?? '').trim()
+        const teacher = teacherEmail ? teacherRows.find((t) => t.email === teacherEmail || t.name === teacherEmail) : undefined
+        const existing = db.select().from(lessons).where(eq(lessons.classId, cls.id)).all().find((l) => l.subjectId === subject.id)
         const values = {
-          number,
-          capacity: num(row.capacity, 0),
           sessionsPerWeek: num(row.sessionsPerWeek, 2),
-          durationMinutes: num(row.durationMinutes, 75),
-          instructorId: instructor?.id ?? null,
-          roomId: room?.id ?? null,
+          durationMinutes: num(row.durationMinutes, 40),
+          teacherId: teacher?.id ?? null,
           locked: bool(row.locked) ? 1 : 0
         }
-        let sectionId: number
+        let lessonId: number
         if (existing) {
-          db.update(sections).set(values).where(eq(sections.id, existing.id)).run()
-          sectionId = existing.id
+          db.update(lessons).set(values).where(eq(lessons.id, existing.id)).run()
+          lessonId = existing.id
           updated++
         } else {
-          sectionId = db.insert(sections).values({ ...values, courseId: course.id }).returning().get().id
+          lessonId = db.insert(lessons).values({ ...values, classId: cls.id, subjectId: subject.id }).returning().get().id
           imported++
         }
         const days = parseDays(row.days ?? '')
         const start = fromHHMM(row.start ?? '')
         const end = fromHHMM(row.end ?? '')
         if (days.length > 0 && start !== null && end !== null && end > start) {
-          db.delete(meetingTimes).where(eq(meetingTimes.sectionId, sectionId)).run()
-          db.insert(meetingTimes)
-            .values({ sectionId, days: daysToStr(days), startMinute: start, endMinute: end })
+          db.update(lessons)
+            .set({ days: daysToStr(days), startMinute: start, endMinute: end })
+            .where(eq(lessons.id, lessonId))
             .run()
         }
       }
@@ -597,7 +602,7 @@ export function registerIoIpc(): void {
 }
 
 function dayLabelWithDate(term: Term, week: number, day: number): string {
-  const base = ['','Mon','Tue','Wed','Thu','Fri','Sat','Sun'][day] ?? ''
+  const base = ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][day] ?? ''
   const start = weekStart(term, week)
   if (!start) return base
   const d = addDays(start, day - 1)

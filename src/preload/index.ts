@@ -8,30 +8,30 @@ const api: RendererApi = {
     update: (id, patch) => ipcRenderer.invoke('terms:update', id, patch),
     remove: (id) => ipcRenderer.invoke('terms:remove', id)
   },
-  courses: {
-    list: (termId) => ipcRenderer.invoke('courses:list', termId),
-    create: (termId, data) => ipcRenderer.invoke('courses:create', termId, data),
-    update: (id, data) => ipcRenderer.invoke('courses:update', id, data),
-    remove: (id) => ipcRenderer.invoke('courses:remove', id)
+  classes: {
+    list: (termId) => ipcRenderer.invoke('classes:list', termId),
+    create: (termId, data) => ipcRenderer.invoke('classes:create', termId, data),
+    update: (id, data) => ipcRenderer.invoke('classes:update', id, data),
+    remove: (id) => ipcRenderer.invoke('classes:remove', id)
   },
-  instructors: {
-    list: () => ipcRenderer.invoke('instructors:list'),
-    create: (data) => ipcRenderer.invoke('instructors:create', data),
-    update: (id, data) => ipcRenderer.invoke('instructors:update', id, data),
-    remove: (id) => ipcRenderer.invoke('instructors:remove', id)
+  subjects: {
+    list: (termId) => ipcRenderer.invoke('subjects:list', termId),
+    create: (termId, data) => ipcRenderer.invoke('subjects:create', termId, data),
+    update: (id, data) => ipcRenderer.invoke('subjects:update', id, data),
+    remove: (id) => ipcRenderer.invoke('subjects:remove', id)
   },
-  rooms: {
-    list: () => ipcRenderer.invoke('rooms:list'),
-    create: (data) => ipcRenderer.invoke('rooms:create', data),
-    update: (id, data) => ipcRenderer.invoke('rooms:update', id, data),
-    remove: (id) => ipcRenderer.invoke('rooms:remove', id)
+  teachers: {
+    list: () => ipcRenderer.invoke('teachers:list'),
+    create: (data) => ipcRenderer.invoke('teachers:create', data),
+    update: (id, data) => ipcRenderer.invoke('teachers:update', id, data),
+    remove: (id) => ipcRenderer.invoke('teachers:remove', id)
   },
-  sections: {
-    list: (termId) => ipcRenderer.invoke('sections:list', termId),
-    create: (courseId, data) => ipcRenderer.invoke('sections:create', courseId, data),
-    update: (id, data) => ipcRenderer.invoke('sections:update', id, data),
-    setMeetings: (id, meetings) => ipcRenderer.invoke('sections:setMeetings', id, meetings),
-    remove: (id) => ipcRenderer.invoke('sections:remove', id)
+  lessons: {
+    list: (termId) => ipcRenderer.invoke('lessons:list', termId),
+    create: (classId, data) => ipcRenderer.invoke('lessons:create', classId, data),
+    update: (id, data) => ipcRenderer.invoke('lessons:update', id, data),
+    setSchedule: (id, days, start, end) => ipcRenderer.invoke('lessons:setSchedule', id, days, start, end),
+    remove: (id) => ipcRenderer.invoke('lessons:remove', id)
   },
   settings: {
     get: () => ipcRenderer.invoke('settings:get'),
@@ -41,13 +41,13 @@ const api: RendererApi = {
     create: (data) => ipcRenderer.invoke('overrides:create', data),
     update: (id, patch) => ipcRenderer.invoke('overrides:update', id, patch),
     remove: (id) => ipcRenderer.invoke('overrides:remove', id),
-    resetWeek: (termId, week, sectionId) => ipcRenderer.invoke('overrides:resetWeek', termId, week, sectionId)
+    resetWeek: (termId, week, lessonId) => ipcRenderer.invoke('overrides:resetWeek', termId, week, lessonId)
   },
   schedule: {
     getData: (termId) => ipcRenderer.invoke('schedule:getData', termId),
-    apply: (termId, assignments) => ipcRenderer.invoke('schedule:apply', termId, assignments),
-    resolveWeek: (termId, week, assignments) => ipcRenderer.invoke('schedule:resolveWeek', termId, week, assignments),
-    unschedule: (sectionIds) => ipcRenderer.invoke('schedule:unschedule', sectionIds)
+    applyClasses: (termId, assignments) => ipcRenderer.invoke('schedule:applyClasses', termId, assignments),
+    assignTeachers: (termId, assignments) => ipcRenderer.invoke('schedule:assignTeachers', termId, assignments),
+    unschedule: (lessonIds) => ipcRenderer.invoke('schedule:unschedule', lessonIds)
   },
   io: {
     exportJson: (termId) => ipcRenderer.invoke('io:exportJson', termId),

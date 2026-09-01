@@ -1,96 +1,99 @@
 import { describe, expect, it } from 'vitest'
-import { computeConflicts, scoreSoft, type CtxSection } from '@shared/constraints'
+import { computeConflicts, scoreSoft, type CtxLesson } from '@shared/constraints'
 import { DEFAULT_SETTINGS, type Settings } from '@shared/types'
 
-const room = (id: number, name: string, capacity: number, travelGroup: string) => ({
-  id,
-  name,
-  capacity,
-  travelGroup
-})
-const ins = (id: number, name: string, unavailable: { days: number[]; start: number; end: number }[] = [], maxWeeklyHours = 12) => ({
-  id,
-  name,
-  maxWeeklyHours,
-  unavailable
-})
+const teacher = (
+  id: number,
+  name: string,
+  subjectIds: number[],
+  unavailable: { days: number[]; start: number; end: number }[] = [],
+  maxWeeklyHours = 20
+) => ({ id, name, maxWeeklyHours, unavailable, subjectIds })
 
-function ctx(partial: Partial<CtxSection> & { id: number }): CtxSection {
+function ctx(partial: Partial<CtxLesson> & { id: number }): CtxLesson {
   return {
-    courseId: partial.id,
-    code: `C${partial.id}`,
-    capacity: 30,
+    classId: partial.id,
+    subjectId: 1,
+    code: `9-A·MAT`,
     meetings: [],
-    room: null,
-    instructor: null,
+    teacher: null,
     ...partial
   }
 }
 
 describe('computeConflicts', () => {
-  it('detects room double-booking', () => {
-    const r = room(1, 'CS-101', 40, 'A')
+  it('detects two lessons of the same class overlapping', () => {
     const conflicts = computeConflicts(
       [
-        ctx({ id: 1, meetings: [{ days: [1, 3], start: 540, end: 615 }], room: r }),
-        ctx({ id: 2, meetings: [{ days: [1, 3], start: 600, end: 675 }], room: r })
+        ctx({ id: 1, classId: 10, meetings: [{ days: [1, 3], start: 540, end: 580 }] }),
+        ctx({ id: 2, classId: 10, meetings: [{ days: [1, 3], start: 560, end: 600 }] })
       ],
       DEFAULT_SETTINGS
     )
-    expect(conflicts.some((c) => c.type === 'room-overlap')).toBe(true)
+    expect(conflicts.some((c) => c.type === 'class-overlap')).toBe(true)
   })
 
-  it('detects instructor overlap even in different rooms', () => {
-    const i = ins(1, 'Ada')
+  it('allows the same time in different classes without teachers', () => {
     const conflicts = computeConflicts(
       [
-        ctx({ id: 1, meetings: [{ days: [2], start: 540, end: 615 }], room: room(1, 'R1', 40, 'A'), instructor: i }),
-        ctx({ id: 2, meetings: [{ days: [2], start: 540, end: 615 }], room: room(2, 'R2', 40, 'A'), instructor: i })
+        ctx({ id: 1, classId: 10, meetings: [{ days: [1], start: 540, end: 580 }] }),
+        ctx({ id: 2, classId: 20, meetings: [{ days: [1], start: 540, end: 580 }] })
       ],
       DEFAULT_SETTINGS
     )
-    expect(conflicts.some((c) => c.type === 'instructor-overlap')).toBe(true)
+    expect(conflicts).toHaveLength(0)
   })
 
-  it('detects overlapping sections of the same course', () => {
+  it('detects teacher double-booking across classes', () => {
+    const t = teacher(1, 'Ayşe', [1])
     const conflicts = computeConflicts(
       [
-        ctx({ id: 1, courseId: 9, meetings: [{ days: [1], start: 540, end: 615 }] }),
-        ctx({ id: 2, courseId: 9, meetings: [{ days: [1], start: 600, end: 675 }] })
+        ctx({ id: 1, classId: 10, meetings: [{ days: [2], start: 540, end: 580 }], teacher: t }),
+        ctx({ id: 2, classId: 20, meetings: [{ days: [2], start: 540, end: 580 }], teacher: t })
       ],
       DEFAULT_SETTINGS
     )
-    expect(conflicts.some((c) => c.type === 'course-overlap')).toBe(true)
+    expect(conflicts.some((c) => c.type === 'teacher-overlap')).toBe(true)
   })
 
-  it('detects capacity violations and instructor unavailability', () => {
-    const i = ins(1, 'Ada', [{ days: [1], start: 480, end: 600 }])
+  it('detects unqualified teachers and unavailability', () => {
+    const t = teacher(1, 'Ayşe', [2], [{ days: [1], start: 480, end: 600 }])
     const conflicts = computeConflicts(
-      [ctx({ id: 1, capacity: 100, meetings: [{ days: [1], start: 540, end: 630 }], room: room(1, 'R1', 40, 'A'), instructor: i })],
+      [ctx({ id: 1, subjectId: 1, meetings: [{ days: [1], start: 540, end: 620 }], teacher: t })],
       DEFAULT_SETTINGS
     )
-    expect(conflicts.some((c) => c.type === 'capacity')).toBe(true)
-    expect(conflicts.some((c) => c.type === 'instructor-unavailable')).toBe(true)
+    expect(conflicts.some((c) => c.type === 'teacher-unqualified')).toBe(true)
+    expect(conflicts.some((c) => c.type === 'teacher-unavailable')).toBe(true)
   })
 
-  it('flags insufficient travel time between groups', () => {
-    const settings: Settings = { ...DEFAULT_SETTINGS, travelMinutes: { 'A|B': 20 } }
-    const i = ins(1, 'Ada')
-    const conflicts = computeConflicts(
-      [
-        ctx({ id: 1, meetings: [{ days: [1], start: 540, end: 615 }], room: room(1, 'R1', 40, 'A'), instructor: i }),
-        ctx({ id: 2, meetings: [{ days: [1], start: 625, end: 700 }], room: room(2, 'R2', 40, 'B'), instructor: i })
-      ],
-      settings
-    )
-    expect(conflicts.some((c) => c.type === 'travel')).toBe(true)
+  it('detects exceeding teacher weekly hours', () => {
+    const t = teacher(1, 'Ayşe', [1], [], 2)
+    const meetings = [
+      { days: [1], start: 540, end: 600 },
+      { days: [2], start: 540, end: 600 },
+      { days: [3], start: 540, end: 600 }
+    ]
+    const conflicts = computeConflicts([ctx({ id: 1, meetings, teacher: t })], DEFAULT_SETTINGS)
+    expect(conflicts.some((c) => c.type === 'teacher-overhours')).toBe(true)
   })
 
   it('accepts a clean schedule', () => {
     const conflicts = computeConflicts(
       [
-        ctx({ id: 1, meetings: [{ days: [1, 3], start: 540, end: 615 }], room: room(1, 'R1', 40, 'A'), instructor: ins(1, 'A') }),
-        ctx({ id: 2, meetings: [{ days: [2, 4], start: 600, end: 675 }], room: room(1, 'R1', 40, 'A'), instructor: ins(2, 'B') })
+        ctx({
+          id: 1,
+          classId: 10,
+          subjectId: 1,
+          meetings: [{ days: [1, 3], start: 540, end: 580 }],
+          teacher: teacher(1, 'A', [1])
+        }),
+        ctx({
+          id: 2,
+          classId: 20,
+          subjectId: 1,
+          meetings: [{ days: [2, 4], start: 600, end: 640 }],
+          teacher: teacher(2, 'B', [1])
+        })
       ],
       DEFAULT_SETTINGS
     )
@@ -99,34 +102,50 @@ describe('computeConflicts', () => {
 })
 
 describe('scoreSoft', () => {
-  it('penalizes meetings outside the preferred window', () => {
+  it('penalizes lessons outside the preferred window', () => {
     const score = scoreSoft(
-      [ctx({ id: 1, meetings: [{ days: [1], start: 480, end: 540 }] })],
+      [ctx({ id: 1, meetings: [{ days: [1], start: 480, end: 510 }] })],
       DEFAULT_SETTINGS
     )
-    expect(score.window).toBe(60 * DEFAULT_SETTINGS.weights.window)
+    expect(score.window).toBe(30 * DEFAULT_SETTINGS.weights.window)
   })
 
-  it('penalizes back-to-back meetings of the same instructor', () => {
-    const i = ins(1, 'Ada')
+  it('penalizes teacher load imbalance', () => {
+    const t1 = teacher(1, 'A', [1])
+    const t2 = teacher(2, 'B', [2])
     const score = scoreSoft(
       [
-        ctx({ id: 1, meetings: [{ days: [1], start: 540, end: 615 }], instructor: i }),
-        ctx({ id: 2, meetings: [{ days: [1], start: 625, end: 700 }], instructor: i })
+        ctx({ id: 1, meetings: [{ days: [1], start: 510, end: 570 }], teacher: t1 }),
+        ctx({ id: 2, meetings: [{ days: [1], start: 510, end: 570 }], teacher: t2 }),
+        ctx({ id: 3, meetings: [{ days: [2], start: 510, end: 570 }], teacher: t1 }),
+        ctx({ id: 4, meetings: [{ days: [2], start: 510, end: 570 }], teacher: t1 })
       ],
       DEFAULT_SETTINGS
     )
-    expect(score.backToBack).toBe(DEFAULT_SETTINGS.weights.backToBack)
+    expect(score.load).toBe(1 * DEFAULT_SETTINGS.weights.load)
   })
 
   it('penalizes exceeding weekly hour limits', () => {
-    const i = ins(1, 'Ada', [], 3)
+    const t = teacher(1, 'A', [1], [], 1)
     const meetings = [
-      { days: [1], start: 540, end: 660 },
-      { days: [2], start: 540, end: 660 },
-      { days: [3], start: 540, end: 660 }
+      { days: [1], start: 540, end: 600 },
+      { days: [2], start: 540, end: 600 }
     ]
-    const score = scoreSoft([ctx({ id: 1, meetings, instructor: i })], DEFAULT_SETTINGS)
-    expect(score.maxHours).toBe(3 * DEFAULT_SETTINGS.weights.maxHours)
+    const score = scoreSoft([ctx({ id: 1, meetings, teacher: t })], DEFAULT_SETTINGS)
+    expect(score.overHours).toBe(1 * DEFAULT_SETTINGS.weights.overHours)
+  })
+
+  it('returns zero for a perfectly balanced clean schedule', () => {
+    const settings: Settings = { ...DEFAULT_SETTINGS, preferredStart: 510, preferredEnd: 930 }
+    const t1 = teacher(1, 'A', [1], [], 20)
+    const t2 = teacher(2, 'B', [1], [], 20)
+    const score = scoreSoft(
+      [
+        ctx({ id: 1, meetings: [{ days: [1], start: 510, end: 570 }], teacher: t1 }),
+        ctx({ id: 2, meetings: [{ days: [1], start: 510, end: 570 }], teacher: t2 })
+      ],
+      settings
+    )
+    expect(score.total).toBe(0)
   })
 })

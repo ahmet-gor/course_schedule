@@ -6,45 +6,6 @@ const BASE_SCHEMA: string[] = [
     name TEXT NOT NULL,
     created_at INTEGER NOT NULL
   )`,
-  `CREATE TABLE IF NOT EXISTS courses (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    term_id INTEGER NOT NULL REFERENCES terms(id) ON DELETE CASCADE,
-    code TEXT NOT NULL,
-    title TEXT NOT NULL,
-    credits REAL NOT NULL
-  )`,
-  `CREATE TABLE IF NOT EXISTS instructors (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    email TEXT NOT NULL DEFAULT '',
-    max_weekly_hours REAL NOT NULL DEFAULT 12,
-    unavailable TEXT NOT NULL DEFAULT '[]'
-  )`,
-  `CREATE TABLE IF NOT EXISTS rooms (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    building TEXT NOT NULL DEFAULT '',
-    capacity INTEGER NOT NULL DEFAULT 0,
-    travel_group TEXT NOT NULL DEFAULT 'A'
-  )`,
-  `CREATE TABLE IF NOT EXISTS sections (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    course_id INTEGER NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
-    number TEXT NOT NULL,
-    capacity INTEGER NOT NULL DEFAULT 0,
-    sessions_per_week INTEGER NOT NULL DEFAULT 2,
-    duration_minutes INTEGER NOT NULL DEFAULT 75,
-    instructor_id INTEGER REFERENCES instructors(id) ON DELETE SET NULL,
-    room_id INTEGER REFERENCES rooms(id) ON DELETE SET NULL,
-    locked INTEGER NOT NULL DEFAULT 0
-  )`,
-  `CREATE TABLE IF NOT EXISTS meeting_times (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    section_id INTEGER NOT NULL REFERENCES sections(id) ON DELETE CASCADE,
-    days TEXT NOT NULL,
-    start_minute INTEGER NOT NULL,
-    end_minute INTEGER NOT NULL
-  )`,
   `CREATE TABLE IF NOT EXISTS settings (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     json TEXT NOT NULL
@@ -54,26 +15,72 @@ const BASE_SCHEMA: string[] = [
 const WEEKS_FEATURE: string[] = [
   `ALTER TABLE terms ADD COLUMN weeks INTEGER NOT NULL DEFAULT 14`,
   `ALTER TABLE terms ADD COLUMN start_date TEXT NOT NULL DEFAULT ''`,
-  `ALTER TABLE terms ADD COLUMN break_weeks TEXT NOT NULL DEFAULT '[]'`,
+  `ALTER TABLE terms ADD COLUMN break_weeks TEXT NOT NULL DEFAULT '[]'`
+]
+
+const LEGACY_TABLES = ['meeting_overrides', 'meeting_times', 'sections', 'courses', 'rooms', 'instructors']
+
+const CLASS_MODEL: string[] = [
+  `CREATE TABLE IF NOT EXISTS classes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    term_id INTEGER NOT NULL REFERENCES terms(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    grade TEXT NOT NULL DEFAULT '',
+    capacity INTEGER NOT NULL DEFAULT 0,
+    homeroom TEXT NOT NULL DEFAULT ''
+  )`,
+  `CREATE TABLE IF NOT EXISTS subjects (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    term_id INTEGER NOT NULL REFERENCES terms(id) ON DELETE CASCADE,
+    code TEXT NOT NULL,
+    title TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS teachers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    email TEXT NOT NULL DEFAULT '',
+    max_weekly_hours REAL NOT NULL DEFAULT 12,
+    unavailable TEXT NOT NULL DEFAULT '[]',
+    subject_ids TEXT NOT NULL DEFAULT '[]'
+  )`,
+  `CREATE TABLE IF NOT EXISTS lessons (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    class_id INTEGER NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+    subject_id INTEGER NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
+    sessions_per_week INTEGER NOT NULL DEFAULT 2,
+    duration_minutes INTEGER NOT NULL DEFAULT 40,
+    teacher_id INTEGER REFERENCES teachers(id) ON DELETE SET NULL,
+    locked INTEGER NOT NULL DEFAULT 0,
+    days TEXT NOT NULL DEFAULT '',
+    start_minute INTEGER,
+    end_minute INTEGER
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_lessons_class ON lessons (class_id)`,
   `CREATE TABLE IF NOT EXISTS meeting_overrides (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    section_id INTEGER NOT NULL REFERENCES sections(id) ON DELETE CASCADE,
+    lesson_id INTEGER NOT NULL REFERENCES lessons(id) ON DELETE CASCADE,
     week INTEGER NOT NULL,
     kind TEXT NOT NULL CHECK (kind IN ('move', 'cancel', 'extra')),
     from_day INTEGER,
     to_day INTEGER,
     start_minute INTEGER,
     end_minute INTEGER,
-    room_id INTEGER REFERENCES rooms(id) ON DELETE SET NULL,
-    instructor_id INTEGER REFERENCES instructors(id) ON DELETE SET NULL,
+    teacher_id INTEGER REFERENCES teachers(id) ON DELETE SET NULL,
     note TEXT NOT NULL DEFAULT ''
   )`,
-  `CREATE INDEX IF NOT EXISTS idx_overrides_section_week ON meeting_overrides (section_id, week)`
+  `CREATE INDEX IF NOT EXISTS idx_overrides_lesson_week ON meeting_overrides (lesson_id, week)`
 ]
 
 const MIGRATIONS: { id: number; statements: string[] }[] = [
   { id: 1, statements: BASE_SCHEMA },
-  { id: 2, statements: WEEKS_FEATURE }
+  { id: 2, statements: WEEKS_FEATURE },
+  {
+    id: 3,
+    statements: [
+      ...LEGACY_TABLES.map((t) => `DROP TABLE IF EXISTS ${t}`),
+      ...CLASS_MODEL
+    ]
+  }
 ]
 
 export function runMigrations(sqlite: Database.Database): void {

@@ -1,51 +1,55 @@
-import { computeConflicts, type CtxSection } from '@shared/constraints'
+import { computeConflicts, type CtxLesson } from '@shared/constraints'
 import { occurrencesForWeek } from '@shared/weeks'
-import type { Occurrence, ScheduleData, SectionFull } from '@shared/types'
+import type { LessonFull, Occurrence, ScheduleData } from '@shared/types'
 import type { GridMeeting } from '../components/TimetableGrid'
 import { conflictText, type Locale } from '../i18n'
 
-export function toCtxSections(data: ScheduleData, override?: Map<number, { meetings: SectionFull['meetings']; roomId: number | null; instructorId: number | null }>): CtxSection[] {
-  const roomById = new Map(data.rooms.map((r) => [r.id, r]))
-  const instructorById = new Map(data.instructors.map((i) => [i.id, i]))
-  return data.sections.map((s) => {
-    const o = override?.get(s.id)
-    const roomId = o ? o.roomId : s.roomId
-    const instructorId = o ? o.instructorId : s.instructorId
-    const room = roomId !== null ? roomById.get(roomId) : undefined
-    const instructor = instructorId !== null ? instructorById.get(instructorId) : undefined
+export function lessonCode(l: LessonFull): string {
+  return `${l.className}·${l.subjectCode}`
+}
+
+export function toCtxLessons(
+  data: ScheduleData,
+  override?: Map<number, { meetings: LessonFull['meetings']; teacherId: number | null }>
+): CtxLesson[] {
+  const teacherById = new Map(data.teachers.map((t) => [t.id, t]))
+  return data.lessons.map((l) => {
+    const o = override?.get(l.id)
+    const teacherId = o ? o.teacherId : l.teacherId
+    const teacher = teacherId !== null ? teacherById.get(teacherId) : undefined
     return {
-      id: s.id,
-      courseId: s.courseId,
-      code: `${s.code}-${s.number}`,
-      capacity: s.capacity,
-      meetings: o ? o.meetings : s.meetings,
-      room: room ? { id: room.id, name: room.name, capacity: room.capacity, travelGroup: room.travelGroup } : null,
-      instructor: instructor
+      id: l.id,
+      classId: l.classId,
+      subjectId: l.subjectId,
+      code: lessonCode(l),
+      meetings: o ? o.meetings : l.meetings,
+      teacher: teacher
         ? {
-            id: instructor.id,
-            name: instructor.name,
-            maxWeeklyHours: instructor.maxWeeklyHours,
-            unavailable: instructor.unavailable
+            id: teacher.id,
+            name: teacher.name,
+            maxWeeklyHours: teacher.maxWeeklyHours,
+            unavailable: teacher.unavailable,
+            subjectIds: teacher.subjectIds
           }
         : null
     }
   })
 }
 
-export function conflictsBySection(
+export function conflictsByLesson(
   data: ScheduleData,
   locale: Locale,
-  override?: Parameters<typeof toCtxSections>[1]
+  override?: Parameters<typeof toCtxLessons>[1]
 ): Record<number, string[]> {
-  const conflicts = computeConflicts(toCtxSections(data, override), data.settings)
+  const conflicts = computeConflicts(toCtxLessons(data, override), data.settings)
   const map: Record<number, string[]> = {}
   for (const c of conflicts) {
     const text = conflictText(c, locale)
-    const arr = map[c.sectionId] ?? []
+    const arr = map[c.lessonId] ?? []
     if (!arr.includes(text)) arr.push(text)
-    map[c.sectionId] = arr
-    if (c.withSectionIds) {
-      for (const other of c.withSectionIds) {
+    map[c.lessonId] = arr
+    if (c.withLessonIds) {
+      for (const other of c.withLessonIds) {
         const oarr = map[other] ?? []
         if (!oarr.includes(text)) oarr.push(text)
         map[other] = oarr
@@ -55,50 +59,50 @@ export function conflictsBySection(
   return map
 }
 
-export function toGridMeetings(
-  sections: SectionFull[],
-  fallbacks: { room: string; instructor: string }
-): GridMeeting[] {
-  return sections.map((s) => ({
-    sectionId: s.id,
-    label: `${s.code}-${s.number}`,
-    title: s.title,
-    days: s.meetings.flatMap((m) => m.days),
-    start: s.meetings[0]?.start ?? 0,
-    end: s.meetings[0]?.end ?? 0,
-    roomLabel: s.roomName ?? fallbacks.room,
-    instructorLabel: s.instructorName ?? fallbacks.instructor,
-    courseCode: s.code
+export function toGridMeetings(lessons: LessonFull[], fallbackTeacher: string): GridMeeting[] {
+  return lessons.map((l) => ({
+    lessonId: l.id,
+    label: `${l.className}·${l.subjectCode}`,
+    title: l.subjectTitle,
+    days: l.meetings.flatMap((m) => m.days),
+    start: l.meetings[0]?.start ?? 0,
+    end: l.meetings[0]?.end ?? 0,
+    teacherLabel: l.teacherName ?? fallbackTeacher,
+    classLabel: l.className,
+    subjectCode: l.subjectCode
   })).filter((m) => m.days.length > 0)
 }
 
-export function weekOccurrences(data: ScheduleData, week: number): { occ: Occurrence; section: SectionFull }[] {
-  const sectionById = new Map(data.sections.map((s) => [s.id, s]))
-  return occurrencesForWeek(data.sections, data.overrides, week)
-    .map((occ) => ({ occ, section: sectionById.get(occ.sectionId) }))
-    .filter((x): x is { occ: Occurrence; section: SectionFull } => x.section !== undefined)
+export function weekOccurrences(data: ScheduleData, week: number): { occ: Occurrence; lesson: LessonFull }[] {
+  const lessonById = new Map(data.lessons.map((l) => [l.id, l]))
+  return occurrencesForWeek(data.lessons, data.overrides, week)
+    .map((occ) => ({ occ, lesson: lessonById.get(occ.lessonId) }))
+    .filter((x): x is { occ: Occurrence; lesson: LessonFull } => x.lesson !== undefined)
 }
 
-export function occurrenceCtxSections(
+export function occurrenceCtxLessons(
   data: ScheduleData,
-  pairs: { occ: Occurrence; section: SectionFull }[]
-): CtxSection[] {
-  const roomById = new Map(data.rooms.map((r) => [r.id, r]))
-  const insById = new Map(data.instructors.map((i) => [i.id, i]))
+  pairs: { occ: Occurrence; lesson: LessonFull }[]
+): CtxLesson[] {
+  const teacherById = new Map(data.teachers.map((t) => [t.id, t]))
   return pairs
     .filter((p) => !p.occ.cancelled)
-    .map(({ occ, section }) => {
-      const room = occ.roomId !== null ? roomById.get(occ.roomId) : undefined
-      const ins = occ.instructorId !== null ? insById.get(occ.instructorId) : undefined
+    .map(({ occ, lesson }) => {
+      const teacher = occ.teacherId !== null ? teacherById.get(occ.teacherId) : undefined
       return {
-        id: section.id,
-        courseId: section.courseId,
-        code: `${section.code}-${section.number}`,
-        capacity: section.capacity,
+        id: lesson.id,
+        classId: lesson.classId,
+        subjectId: lesson.subjectId,
+        code: lessonCode(lesson),
         meetings: [{ days: [occ.day], start: occ.start, end: occ.end }],
-        room: room ? { id: room.id, name: room.name, capacity: room.capacity, travelGroup: room.travelGroup } : null,
-        instructor: ins
-          ? { id: ins.id, name: ins.name, maxWeeklyHours: ins.maxWeeklyHours, unavailable: ins.unavailable }
+        teacher: teacher
+          ? {
+              id: teacher.id,
+              name: teacher.name,
+              maxWeeklyHours: teacher.maxWeeklyHours,
+              unavailable: teacher.unavailable,
+              subjectIds: teacher.subjectIds
+            }
           : null
       }
     })
@@ -106,25 +110,23 @@ export function occurrenceCtxSections(
 
 export function occurrenceGridMeetings(
   data: ScheduleData,
-  pairs: { occ: Occurrence; section: SectionFull }[],
-  fallbacks: { room: string; instructor: string }
+  pairs: { occ: Occurrence; lesson: LessonFull }[],
+  fallbackTeacher: string
 ): GridMeeting[] {
-  const roomById = new Map(data.rooms.map((r) => [r.id, r]))
-  const insById = new Map(data.instructors.map((i) => [i.id, i]))
-  return pairs.map(({ occ, section }) => {
-    const room = occ.roomId !== null ? roomById.get(occ.roomId) : undefined
-    const ins = occ.instructorId !== null ? insById.get(occ.instructorId) : undefined
+  const teacherById = new Map(data.teachers.map((t) => [t.id, t]))
+  return pairs.map(({ occ, lesson }) => {
+    const teacher = occ.teacherId !== null ? teacherById.get(occ.teacherId) : undefined
     return {
-      sectionId: section.id,
+      lessonId: lesson.id,
       occKey: occ.key,
-      label: `${section.code}-${section.number}`,
-      title: section.title,
+      label: `${lesson.className}·${lesson.subjectCode}`,
+      title: lesson.subjectTitle,
       days: [occ.day],
       start: occ.start,
       end: occ.end,
-      roomLabel: room?.name ?? fallbacks.room,
-      instructorLabel: ins?.name ?? fallbacks.instructor,
-      courseCode: section.code,
+      teacherLabel: teacher?.name ?? fallbackTeacher,
+      classLabel: lesson.className,
+      subjectCode: lesson.subjectCode,
       cancelled: occ.cancelled,
       badge: occ.cancelled ? 'cancelled' : occ.extra ? 'extra' : occ.source.type === 'override' ? 'moved' : undefined
     }
@@ -133,18 +135,18 @@ export function occurrenceGridMeetings(
 
 export function weekConflicts(
   data: ScheduleData,
-  pairs: { occ: Occurrence; section: SectionFull }[],
+  pairs: { occ: Occurrence; lesson: LessonFull }[],
   locale: Locale
 ): Record<number, string[]> {
-  const conflicts = computeConflicts(occurrenceCtxSections(data, pairs), data.settings)
+  const conflicts = computeConflicts(occurrenceCtxLessons(data, pairs), data.settings)
   const map: Record<number, string[]> = {}
   for (const c of conflicts) {
     const text = conflictText(c, locale)
-    const arr = map[c.sectionId] ?? []
+    const arr = map[c.lessonId] ?? []
     if (!arr.includes(text)) arr.push(text)
-    map[c.sectionId] = arr
-    if (c.withSectionIds) {
-      for (const other of c.withSectionIds) {
+    map[c.lessonId] = arr
+    if (c.withLessonIds) {
+      for (const other of c.withLessonIds) {
         const oarr = map[other] ?? []
         if (!oarr.includes(text)) oarr.push(text)
         map[other] = oarr

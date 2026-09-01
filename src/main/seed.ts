@@ -1,5 +1,5 @@
 import { getDb } from './db/client'
-import { courses, instructors, meetingTimes, rooms, sections, terms } from './db/schema'
+import { classes, lessons, subjects, teachers, terms } from './db/schema'
 import { daysToStr, getSettings, saveSettings, mapTerm } from './ipc/catalog'
 import type { Term } from '@shared/types'
 
@@ -10,175 +10,121 @@ export function seedSampleData(): Term {
     throw new Error('Sample data can only be loaded into an empty database')
   }
 
-  const term = db.insert(terms).values({ name: 'Fall 2026 (Sample)', createdAt: Date.now() }).returning().get()
+  const term = db
+    .insert(terms)
+    .values({ name: '2026-2027 Fall (Sample)', createdAt: Date.now(), weeks: getSettings().defaultWeeks })
+    .returning()
+    .get()
 
-  const ins = [
-    { name: 'Dr. Ada Lovelace', email: 'ada@uni.edu', maxWeeklyHours: 9, unavailable: JSON.stringify([{ days: [1], start: 480, end: 720 }]) },
-    { name: 'Dr. Alan Turing', email: 'alan@uni.edu', maxWeeklyHours: 12, unavailable: '[]' },
-    { name: 'Dr. Grace Hopper', email: 'grace@uni.edu', maxWeeklyHours: 12, unavailable: JSON.stringify([{ days: [5], start: 900, end: 1260 }]) },
-    { name: 'Dr. Edsger Dijkstra', email: 'edsger@uni.edu', maxWeeklyHours: 10, unavailable: '[]' },
-    { name: 'Dr. Barbara Liskov', email: 'barbara@uni.edu', maxWeeklyHours: 12, unavailable: '[]' },
-    { name: 'Dr. Donald Knuth', email: 'donald@uni.edu', maxWeeklyHours: 6, unavailable: '[]' }
-  ].map((v) => db.insert(instructors).values(v).returning().get())
-  const insByName = (name: string) => ins.find((i) => i.name === name)!.id
+  const subjectRows = [
+    { code: 'MAT', title: 'Mathematics' },
+    { code: 'PHY', title: 'Physics' },
+    { code: 'TUR', title: 'Turkish' },
+    { code: 'ENG', title: 'English' },
+    { code: 'HIS', title: 'History' },
+    { code: 'BIO', title: 'Biology' },
+    { code: 'CHE', title: 'Chemistry' },
+    { code: 'ART', title: 'Art' },
+    { code: 'PE', title: 'Physical Education' }
+  ].map((v) => db.insert(subjects).values({ ...v, termId: term.id }).returning().get())
+  const subjectByCode = (code: string) => subjectRows.find((s) => s.code === code)!.id
 
-  const rms = [
-    { name: 'CS-101', building: 'CS Building', capacity: 40, travelGroup: 'A' },
-    { name: 'CS-210', building: 'CS Building', capacity: 60, travelGroup: 'A' },
-    { name: 'CS-315', building: 'CS Building', capacity: 35, travelGroup: 'A' },
-    { name: 'NH-240', building: 'North Hall', capacity: 110, travelGroup: 'B' },
-    { name: 'NH-110', building: 'North Hall', capacity: 45, travelGroup: 'B' }
-  ].map((v) => db.insert(rooms).values(v).returning().get())
-  const roomByName = (name: string) => rms.find((r) => r.name === name)!.id
+  const teacherRows = [
+    { name: 'Ayşe Yılmaz', email: 'ayse@okul.edu.tr', maxWeeklyHours: 20, unavailable: '[]', subjectIds: ['MAT'] },
+    { name: 'Mehmet Demir', email: 'mehmet@okul.edu.tr', maxWeeklyHours: 22, unavailable: '[]', subjectIds: ['MAT', 'PHY'] },
+    { name: 'Zeynep Kaya', email: 'zeynep@okul.edu.tr', maxWeeklyHours: 22, unavailable: '[]', subjectIds: ['TUR', 'HIS'] },
+    { name: 'Elif Şahin', email: 'elif@okul.edu.tr', maxWeeklyHours: 20, unavailable: JSON.stringify([{ days: [5], start: 780, end: 960 }]), subjectIds: ['ENG', 'TUR', 'HIS'] },
+    { name: 'Ahmet Çelik', email: 'ahmetc@okul.edu.tr', maxWeeklyHours: 20, unavailable: '[]', subjectIds: ['HIS', 'ART', 'ENG'] },
+    { name: 'Fatma Aydın', email: 'fatma@okul.edu.tr', maxWeeklyHours: 20, unavailable: '[]', subjectIds: ['BIO', 'CHE', 'ART'] },
+    { name: 'Can Arslan', email: 'can@okul.edu.tr', maxWeeklyHours: 22, unavailable: '[]', subjectIds: ['PHY', 'CHE', 'BIO', 'MAT'] },
+    { name: 'Deniz Koç', email: 'deniz@okul.edu.tr', maxWeeklyHours: 18, unavailable: '[]', subjectIds: ['ENG', 'PE', 'ART'] },
+    { name: 'Hatice Özdemir', email: 'hatice@okul.edu.tr', maxWeeklyHours: 20, unavailable: '[]', subjectIds: ['MAT', 'TUR'] },
+    { name: 'Burak Yıldız', email: 'burak@okul.edu.tr', maxWeeklyHours: 20, unavailable: '[]', subjectIds: ['PHY', 'BIO', 'CHE', 'PE'] }
+  ].map((v) =>
+    db
+      .insert(teachers)
+      .values({
+        name: v.name,
+        email: v.email,
+        maxWeeklyHours: v.maxWeeklyHours,
+        unavailable: v.unavailable,
+        subjectIds: JSON.stringify(v.subjectIds.map(subjectByCode))
+      })
+      .returning()
+      .get()
+  )
+  void teacherRows
 
-  const settings = getSettings()
-  saveSettings({ ...settings, travelMinutes: { ...settings.travelMinutes, 'A|B': 12 } })
-
-  interface SectionSeed {
-    number: string
-    capacity: number
+  interface LessonSeed {
+    subject: string
     sessionsPerWeek: number
     durationMinutes: number
-    instructor?: string
-    room?: string
     locked?: boolean
-    meetings?: { days: number[]; start: number; end: number }[]
+    days?: number[]
+    start?: number
   }
-  interface CourseSeed {
-    code: string
-    title: string
-    credits: number
-    sections: SectionSeed[]
+  interface ClassSeed {
+    name: string
+    grade: string
+    capacity: number
+    homeroom: string
+    lessons: LessonSeed[]
   }
 
-  const seed: CourseSeed[] = [
+  const grade9: Record<string, number> = { MAT: 5, TUR: 4, PHY: 3, ENG: 4, HIS: 2, BIO: 2, CHE: 2, ART: 1, PE: 2 }
+  const grade10: Record<string, number> = { MAT: 5, TUR: 4, PHY: 3, ENG: 4, HIS: 2, CHE: 3, BIO: 2, ART: 1, PE: 2 }
+
+  const curriculum = (hours: Record<string, number>): LessonSeed[] =>
+    Object.entries(hours).map(([subject, sessionsPerWeek]) => ({
+      subject,
+      sessionsPerWeek,
+      durationMinutes: 40
+    }))
+
+  const seed: ClassSeed[] = [
     {
-      code: 'CSE101',
-      title: 'Introduction to Computer Science',
-      credits: 4,
-      sections: [
+      name: '9-A',
+      grade: '9',
+      capacity: 28,
+      homeroom: 'B-201',
+      lessons: [
         {
-          number: 'A',
-          capacity: 38,
-          sessionsPerWeek: 3,
-          durationMinutes: 50,
-          instructor: 'Dr. Alan Turing',
-          room: 'CS-101',
+          ...curriculum(grade9)[0],
           locked: true,
-          meetings: [{ days: [1, 3, 5], start: 540, end: 590 }]
+          days: [1, 2, 3, 4, 5],
+          start: 510
         },
-        { number: 'B', capacity: 38, sessionsPerWeek: 3, durationMinutes: 50, instructor: 'Dr. Alan Turing' },
-        { number: 'C', capacity: 38, sessionsPerWeek: 3, durationMinutes: 50, instructor: 'Dr. Grace Hopper' },
-        { number: 'D', capacity: 32, sessionsPerWeek: 3, durationMinutes: 50 }
+        ...curriculum(grade9).slice(1)
       ]
     },
-    {
-      code: 'CSE201',
-      title: 'Data Structures',
-      credits: 4,
-      sections: [
-        {
-          number: 'A',
-          capacity: 55,
-          sessionsPerWeek: 2,
-          durationMinutes: 75,
-          instructor: 'Dr. Barbara Liskov',
-          room: 'CS-210',
-          meetings: [{ days: [2, 4], start: 600, end: 675 }]
-        },
-        { number: 'B', capacity: 55, sessionsPerWeek: 2, durationMinutes: 75, instructor: 'Dr. Barbara Liskov' },
-        { number: 'C', capacity: 50, sessionsPerWeek: 2, durationMinutes: 75 }
-      ]
-    },
-    {
-      code: 'CSE202',
-      title: 'Discrete Mathematics',
-      credits: 3,
-      sections: [
-        {
-          number: 'A',
-          capacity: 100,
-          sessionsPerWeek: 2,
-          durationMinutes: 75,
-          instructor: 'Dr. Donald Knuth',
-          room: 'NH-240',
-          meetings: [{ days: [1, 3], start: 840, end: 915 }]
-        },
-        { number: 'B', capacity: 100, sessionsPerWeek: 2, durationMinutes: 75, instructor: 'Dr. Donald Knuth' }
-      ]
-    },
-    {
-      code: 'CSE301',
-      title: 'Operating Systems',
-      credits: 3,
-      sections: [
-        { number: 'A', capacity: 45, sessionsPerWeek: 2, durationMinutes: 75, instructor: 'Dr. Edsger Dijkstra' },
-        { number: 'B', capacity: 45, sessionsPerWeek: 2, durationMinutes: 75, instructor: 'Dr. Edsger Dijkstra' }
-      ]
-    },
-    {
-      code: 'CSE310',
-      title: 'Database Systems',
-      credits: 3,
-      sections: [{ number: 'A', capacity: 100, sessionsPerWeek: 2, durationMinutes: 75, instructor: 'Dr. Ada Lovelace' }]
-    },
-    {
-      code: 'CSE491',
-      title: 'Senior Seminar',
-      credits: 1,
-      sections: [{ number: 'A', capacity: 25, sessionsPerWeek: 1, durationMinutes: 110, instructor: 'Dr. Grace Hopper' }]
-    },
-    {
-      code: 'MAT210',
-      title: 'Linear Algebra',
-      credits: 3,
-      sections: [
-        { number: 'A', capacity: 40, sessionsPerWeek: 3, durationMinutes: 50, instructor: 'Dr. Ada Lovelace' },
-        { number: 'B', capacity: 40, sessionsPerWeek: 3, durationMinutes: 50 }
-      ]
-    },
-    {
-      code: 'MAT211',
-      title: 'Statistics',
-      credits: 3,
-      sections: [
-        {
-          number: 'A',
-          capacity: 40,
-          sessionsPerWeek: 2,
-          durationMinutes: 75,
-          room: 'CS-315',
-          meetings: [{ days: [2, 4], start: 840, end: 915 }]
-        },
-        { number: 'B', capacity: 35, sessionsPerWeek: 2, durationMinutes: 75 }
-      ]
-    }
+    { name: '9-B', grade: '9', capacity: 27, homeroom: 'B-202', lessons: curriculum(grade9) },
+    { name: '10-A', grade: '10', capacity: 26, homeroom: 'C-101', lessons: curriculum(grade10) },
+    { name: '10-B', grade: '10', capacity: 25, homeroom: 'C-102', lessons: curriculum(grade10) }
   ]
 
   for (const c of seed) {
-    const course = db.insert(courses).values({ termId: term.id, code: c.code, title: c.title, credits: c.credits }).returning().get()
-    for (const s of c.sections) {
-      const section = db
-        .insert(sections)
+    const cls = db
+      .insert(classes)
+      .values({ termId: term.id, name: c.name, grade: c.grade, capacity: c.capacity, homeroom: c.homeroom })
+      .returning()
+      .get()
+    for (const l of c.lessons) {
+      db.insert(lessons)
         .values({
-          courseId: course.id,
-          number: s.number,
-          capacity: s.capacity,
-          sessionsPerWeek: s.sessionsPerWeek,
-          durationMinutes: s.durationMinutes,
-          instructorId: s.instructor ? insByName(s.instructor) : null,
-          roomId: s.room ? roomByName(s.room) : null,
-          locked: s.locked ? 1 : 0
+          classId: cls.id,
+          subjectId: subjectByCode(l.subject),
+          sessionsPerWeek: l.sessionsPerWeek,
+          durationMinutes: l.durationMinutes,
+          teacherId: null,
+          locked: l.locked ? 1 : 0,
+          days: l.days ? daysToStr(l.days) : '',
+          startMinute: l.start ?? null,
+          endMinute: l.start !== undefined ? l.start + l.durationMinutes : null
         })
-        .returning()
-        .get()
-      for (const m of s.meetings ?? []) {
-        db.insert(meetingTimes)
-          .values({ sectionId: section.id, days: daysToStr(m.days), startMinute: m.start, endMinute: m.end })
-          .run()
-      }
+        .run()
     }
   }
 
+  saveSettings(getSettings())
   return mapTerm(term)
 }

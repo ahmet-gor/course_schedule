@@ -6,10 +6,9 @@ import { LicenseBanner, LicenseDialog } from './components/LicenseUI'
 import { useLicensing } from './store/useLicensing'
 import { useT } from './i18n'
 import TimetablesPage from './pages/TimetablesPage'
-import SectionsPage from './pages/SectionsPage'
-import CoursesPage from './pages/CoursesPage'
-import InstructorsPage from './pages/InstructorsPage'
-import RoomsPage from './pages/RoomsPage'
+import ClassesPage from './pages/ClassesPage'
+import SubjectsPage from './pages/SubjectsPage'
+import TeachersPage from './pages/TeachersPage'
 import GeneratePage from './pages/GeneratePage'
 import SettingsPage from './pages/SettingsPage'
 
@@ -45,10 +44,9 @@ export default function App() {
   return shell(
     <Layout>
       {page === 'timetables' && <TimetablesPage />}
-      {page === 'sections' && <SectionsPage />}
-      {page === 'courses' && <CoursesPage />}
-      {page === 'instructors' && <InstructorsPage />}
-      {page === 'rooms' && <RoomsPage />}
+      {page === 'classes' && <ClassesPage />}
+      {page === 'subjects' && <SubjectsPage />}
+      {page === 'teachers' && <TeachersPage />}
       {page === 'generate' && <GeneratePage />}
       {page === 'settings' && <SettingsPage />}
     </Layout>

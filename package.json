@@ -1,7 +1,7 @@
 {
   "name": "course-scheduler",
   "version": "0.1.0",
-  "description": "Department course scheduler - desktop app (Electron + React + SQLite)",
+  "description": "School class scheduler - desktop app (Electron + React + SQLite)",
   "main": "./out/main/index.js",
   "private": true,
   "scripts": {

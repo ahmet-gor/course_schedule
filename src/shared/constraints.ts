@@ -1,73 +1,72 @@
 import type { Conflict, Settings, SoftScore, TimeSlot } from './types'
-import { daysToLabel, gapBetween, overlap, toHHMM } from './time'
+import { daysToLabel, overlap, toHHMM } from './time'
 
-export interface CtxSection {
+export interface CtxTeacher {
   id: number
-  courseId: number
+  name: string
+  maxWeeklyHours: number
+  unavailable: TimeSlot[]
+  subjectIds: number[]
+}
+
+export interface CtxLesson {
+  id: number
+  classId: number
+  subjectId: number
   code: string
-  capacity: number
   meetings: TimeSlot[]
-  room: { id: number; name: string; capacity: number; travelGroup: string } | null
-  instructor: { id: number; name: string; maxWeeklyHours: number; unavailable: TimeSlot[] } | null
+  teacher: CtxTeacher | null
 }
 
-export function travelMinutesFor(settings: Settings, g1: string | null, g2: string | null): number {
-  if (!g1 || !g2 || g1 === g2) return 0
-  const key = [g1, g2].sort().join('|')
-  return settings.travelMinutes[key] ?? 0
-}
-
-export function computeConflicts(sections: CtxSection[], settings: Settings): Conflict[] {
+export function computeConflicts(lessons: CtxLesson[], settings: Settings): Conflict[] {
+  void settings
   const conflicts: Conflict[] = []
   const flat: {
-    sectionId: number
-    courseId: number
+    lessonId: number
+    classId: number
+    subjectId: number
     code: string
     day: number
     interval: { start: number; end: number }
-    roomId: number | null
-    roomName: string | null
-    group: string | null
-    instructorId: number | null
+    teacherId: number | null
   }[] = []
 
-  for (const s of sections) {
-    if (s.room && s.room.capacity < s.capacity) {
+  for (const l of lessons) {
+    if (l.teacher && !l.teacher.subjectIds.includes(l.subjectId)) {
       conflicts.push({
-        sectionId: s.id,
-        type: 'capacity',
-        message: `Capacity ${s.capacity} exceeds room ${s.room.name} (${s.room.capacity} seats)`,
-        params: { capacity: s.capacity, room: s.room.name, seats: s.room.capacity }
+        lessonId: l.id,
+        type: 'teacher-unqualified',
+        message: `${l.teacher.name} is not qualified to teach ${l.code.split('·').pop() ?? l.code}`,
+        params: { name: l.teacher.name, code: l.code },
+        withLessonIds: []
       })
     }
-    if (s.instructor) {
-      for (const m of s.meetings) {
+    if (l.teacher) {
+      for (const m of l.meetings) {
         for (const d of m.days) {
-          for (const u of s.instructor.unavailable) {
+          for (const u of l.teacher.unavailable) {
             if (u.days.includes(d) && overlap(m, u)) {
               conflicts.push({
-                sectionId: s.id,
-                type: 'instructor-unavailable',
-                message: `${s.code} meets ${daysToLabel([d])} ${toHHMM(m.start)}-${toHHMM(m.end)} during ${s.instructor.name}'s unavailable time`,
-                params: { code: s.code, dayIndex: d, start: toHHMM(m.start), end: toHHMM(m.end), name: s.instructor.name }
+                lessonId: l.id,
+                type: 'teacher-unavailable',
+                message: `${l.code} meets ${daysToLabel([d])} ${toHHMM(m.start)}-${toHHMM(m.end)} during ${l.teacher.name}'s unavailable time`,
+                params: { code: l.code, dayIndex: d, start: toHHMM(m.start), end: toHHMM(m.end), name: l.teacher.name }
               })
             }
           }
         }
       }
     }
-    for (const m of s.meetings) {
+    for (const m of l.meetings) {
       for (const d of m.days) {
         flat.push({
-          sectionId: s.id,
-          courseId: s.courseId,
-          code: s.code,
+          lessonId: l.id,
+          classId: l.classId,
+          subjectId: l.subjectId,
+          code: l.code,
           day: d,
           interval: m,
-          roomId: s.room?.id ?? null,
-          roomName: s.room?.name ?? null,
-          group: s.room?.travelGroup ?? null,
-          instructorId: s.instructor?.id ?? null
+          teacherId: l.teacher?.id ?? null
         })
       }
     }
@@ -78,131 +77,98 @@ export function computeConflicts(sections: CtxSection[], settings: Settings): Co
       const a = flat[i]
       const b = flat[j]
       if (a.day !== b.day || !overlap(a.interval, b.interval)) continue
-      if (a.roomId !== null && a.roomId === b.roomId) {
+      if (a.classId === b.classId) {
         conflicts.push({
-          sectionId: a.sectionId,
-          type: 'room-overlap',
-          message: `Room ${a.roomName} double-booked: ${a.code} and ${b.code} overlap`,
-          params: { room: a.roomName ?? '', a: a.code, b: b.code },
-          withSectionIds: [b.sectionId]
-        })
-      }
-      if (a.instructorId !== null && a.instructorId === b.instructorId) {
-        conflicts.push({
-          sectionId: a.sectionId,
-          type: 'instructor-overlap',
-          message: `Instructor teaches ${a.code} and ${b.code} at the same time`,
+          lessonId: a.lessonId,
+          type: 'class-overlap',
+          message: `Class clash: ${a.code} and ${b.code} overlap`,
           params: { a: a.code, b: b.code },
-          withSectionIds: [b.sectionId]
+          withLessonIds: [b.lessonId]
         })
       }
-      if (a.courseId === b.courseId) {
+      if (a.teacherId !== null && a.teacherId === b.teacherId) {
         conflicts.push({
-          sectionId: a.sectionId,
-          type: 'course-overlap',
-          message: `Sections of ${a.code.split('-')[0]} overlap (${a.code}, ${b.code})`,
-          params: { course: a.code.split('-')[0], a: a.code, b: b.code },
-          withSectionIds: [b.sectionId]
+          lessonId: a.lessonId,
+          type: 'teacher-overlap',
+          message: `Teacher teaches ${a.code} and ${b.code} at the same time`,
+          params: { a: a.code, b: b.code },
+          withLessonIds: [b.lessonId]
         })
       }
     }
   }
 
-  const byInstructor = new Map<number, { code: string; day: number; interval: { start: number; end: number }; group: string | null; sectionId: number }[]>()
-  for (const f of flat) {
-    if (f.instructorId === null) continue
-    const arr = byInstructor.get(f.instructorId) ?? []
-    arr.push({ code: f.code, day: f.day, interval: f.interval, group: f.group, sectionId: f.sectionId })
-    byInstructor.set(f.instructorId, arr)
-  }
-  for (const [, arr] of byInstructor) {
-    for (let i = 0; i < arr.length; i++) {
-      for (let j = i + 1; j < arr.length; j++) {
-        const a = arr[i]
-        const b = arr[j]
-        if (a.day !== b.day || overlap(a.interval, b.interval)) continue
-        const gap = gapBetween(a.interval, b.interval)
-        const needed = travelMinutesFor(settings, a.group, b.group)
-        if (gap < needed) {
-          conflicts.push({
-            sectionId: a.sectionId,
-            type: 'travel',
-            message: `Only ${gap} min between ${a.code} and ${b.code}, need ${needed} min travel`,
-            params: { gap, a: a.code, b: b.code, needed },
-            withSectionIds: [b.sectionId]
-          })
-        }
+  const minutesByTeacher = new Map<number, { name: string; minutes: number; max: number; lessonId: number }>()
+  for (const l of lessons) {
+    if (!l.teacher) continue
+    const cur = minutesByTeacher.get(l.teacher.id) ?? {
+      name: l.teacher.name,
+      minutes: 0,
+      max: l.teacher.maxWeeklyHours,
+      lessonId: l.id
+    }
+    for (const m of l.meetings) {
+      for (const _d of m.days) {
+        cur.minutes += m.end - m.start
       }
+    }
+    minutesByTeacher.set(l.teacher.id, cur)
+  }
+  for (const [, t] of minutesByTeacher) {
+    const excess = t.minutes / 60 - t.max
+    if (excess > 0.001) {
+      conflicts.push({
+        lessonId: t.lessonId,
+        type: 'teacher-overhours',
+        message: `${t.name} is over the weekly limit by ${excess.toFixed(1)} h`,
+        params: { name: t.name, hours: excess.toFixed(1) },
+        withLessonIds: []
+      })
     }
   }
 
   return conflicts
 }
 
-export function scoreSoft(sections: CtxSection[], settings: Settings): SoftScore {
+export function scoreSoft(lessons: CtxLesson[], settings: Settings): SoftScore {
   let windowPenalty = 0
-  const instructorDayMinutes = new Map<string, { instructorId: number; minutes: number }>()
-  const instructorMeetings = new Map<number, { day: number; start: number; end: number; group: string | null }[]>()
+  const minutesByTeacher = new Map<number, number>()
 
-  for (const s of sections) {
-    for (const m of s.meetings) {
+  for (const l of lessons) {
+    for (const m of l.meetings) {
       const before = Math.max(0, settings.preferredStart - m.start)
       const after = Math.max(0, m.end - settings.preferredEnd)
       windowPenalty += before + after
-      if (s.instructor) {
-        const key = `${s.instructor.id}`
-        const arr = instructorMeetings.get(s.instructor.id) ?? []
-        for (const d of m.days) {
-          arr.push({ day: d, start: m.start, end: m.end, group: s.room?.travelGroup ?? null })
-          const dk = `${key}:${d}`
-          const cur = instructorDayMinutes.get(dk) ?? { instructorId: s.instructor.id, minutes: 0 }
-          cur.minutes += m.end - m.start
-          instructorDayMinutes.set(dk, cur)
+      if (l.teacher) {
+        for (const _d of m.days) {
+          minutesByTeacher.set(l.teacher.id, (minutesByTeacher.get(l.teacher.id) ?? 0) + (m.end - m.start))
         }
-        instructorMeetings.set(s.instructor.id, arr)
       }
     }
   }
 
-  let backToBackCount = 0
-  for (const [, arr] of instructorMeetings) {
-    for (let i = 0; i < arr.length; i++) {
-      for (let j = i + 1; j < arr.length; j++) {
-        const a = arr[i]
-        const b = arr[j]
-        if (a.day !== b.day || overlap(a, b)) continue
-        const gap = gapBetween(a, b)
-        if (gap > 0 && gap <= settings.backToBackGapMin) backToBackCount++
-      }
-    }
+  let loadPenaltyHours = 0
+  if (minutesByTeacher.size > 0) {
+    const loads = [...minutesByTeacher.values()].map((m) => m / 60)
+    const avg = loads.reduce((a, b) => a + b, 0) / loads.length
+    for (const h of loads) loadPenaltyHours += Math.max(0, h - avg)
   }
 
-  const maxHours = new Map<number, number>()
-  for (const s of sections) {
-    if (!s.instructor) continue
-    for (const m of s.meetings) {
-      for (const d of m.days) {
-        const cur = maxHours.get(s.instructor.id) ?? 0
-        const minutes = cur + (m.end - m.start)
-        maxHours.set(s.instructor.id, minutes)
-      }
-    }
-  }
   let overHours = 0
-  const seenInstructors = new Set<number>()
-  for (const s of sections) {
-    if (!s.instructor || seenInstructors.has(s.instructor.id)) continue
-    seenInstructors.add(s.instructor.id)
-    const weekly = maxHours.get(s.instructor.id) ?? 0
-    const excess = weekly / 60 - s.instructor.maxWeeklyHours
+  const seen = new Set<number>()
+  for (const l of lessons) {
+    if (!l.teacher || seen.has(l.teacher.id)) continue
+    seen.add(l.teacher.id)
+    const minutes = minutesByTeacher.get(l.teacher.id) ?? 0
+    const excess = minutes / 60 - l.teacher.maxWeeklyHours
     if (excess > 0) overHours += excess
   }
 
   const w = settings.weights
   const parts = {
     window: windowPenalty * w.window,
-    backToBack: backToBackCount * w.backToBack,
-    maxHours: overHours * w.maxHours
+    load: loadPenaltyHours * w.load,
+    overHours: overHours * w.overHours
   }
-  return { total: parts.window + parts.backToBack + parts.maxHours, ...parts }
+  return { total: parts.window + parts.load + parts.overHours, ...parts }
 }

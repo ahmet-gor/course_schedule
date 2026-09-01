@@ -6,10 +6,9 @@ import { translate, useI18n } from '../i18n'
 
 export type Page =
   | 'timetables'
-  | 'sections'
-  | 'courses'
-  | 'instructors'
-  | 'rooms'
+  | 'classes'
+  | 'subjects'
+  | 'teachers'
   | 'generate'
   | 'settings'
 

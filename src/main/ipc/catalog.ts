@@ -3,26 +3,23 @@ import { guardedHandle } from '../licensing'
 import { and, asc, eq, inArray } from 'drizzle-orm'
 import { getDb } from '../db/client'
 import {
-  courses,
-  instructors,
+  classes,
+  lessons,
   meetingOverrides,
-  meetingTimes,
-  rooms,
-  sections,
+  subjects,
   settingsTable,
+  teachers,
   terms
 } from '../db/schema'
 import {
   DEFAULT_SETTINGS,
-  type Meeting,
+  type LessonFull,
   type MeetingOverride,
   type OverrideInput,
-  type SectionFull,
   type Settings,
   type Term,
   type TimeSlot
 } from '@shared/types'
-import { assignmentsToOverrides } from '@shared/weeks'
 
 export function mapTerm(row: { id: number; name: string; weeks: number; startDate: string; breakWeeks: string }): Term {
   let breaks: number[] = []
@@ -40,41 +37,22 @@ export function listOverrides(termId: number): MeetingOverride[] {
   const rows = db
     .select({ o: meetingOverrides })
     .from(meetingOverrides)
-    .innerJoin(sections, eq(meetingOverrides.sectionId, sections.id))
-    .innerJoin(courses, eq(sections.courseId, courses.id))
-    .where(eq(courses.termId, termId))
+    .innerJoin(lessons, eq(meetingOverrides.lessonId, lessons.id))
+    .innerJoin(classes, eq(lessons.classId, classes.id))
+    .where(eq(classes.termId, termId))
     .all()
   return rows.map(({ o }) => ({
     id: o.id,
-    sectionId: o.sectionId,
+    lessonId: o.lessonId,
     week: o.week,
     kind: o.kind as MeetingOverride['kind'],
     fromDay: o.fromDay,
     toDay: o.toDay,
     start: o.startMinute,
     end: o.endMinute,
-    roomId: o.roomId,
-    instructorId: o.instructorId,
+    teacherId: o.teacherId,
     note: o.note
   }))
-}
-
-function insertOverride(sectionId: number, week: number, data: OverrideInput): void {
-  const db = getDb()
-  db.insert(meetingOverrides)
-    .values({
-      sectionId,
-      week,
-      kind: data.kind,
-      fromDay: data.fromDay,
-      toDay: data.toDay,
-      startMinute: data.start,
-      endMinute: data.end,
-      roomId: data.roomId,
-      instructorId: data.instructorId,
-      note: data.note ?? ''
-    })
-    .run()
 }
 
 export function daysToStr(days: number[]): string {
@@ -105,6 +83,16 @@ export function parseUnavailable(json: string): TimeSlot[] {
   }
 }
 
+export function parseSubjectIds(json: string): number[] {
+  try {
+    const parsed = JSON.parse(json)
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter((x): x is number => typeof x === 'number')
+  } catch {
+    return []
+  }
+}
+
 export function getSettings(): Settings {
   const row = getDb().select().from(settingsTable).where(eq(settingsTable.id, 1)).get()
   if (!row) return { ...DEFAULT_SETTINGS }
@@ -125,51 +113,37 @@ export function saveSettings(next: Settings): Settings {
   return next
 }
 
-export function listSectionsFull(termId: number): SectionFull[] {
+export function listLessonsFull(termId: number): LessonFull[] {
   const db = getDb()
   const rows = db
-    .select({
-      section: sections,
-      courseCode: courses.code,
-      courseTitle: courses.title,
-      courseId: courses.id
-    })
-    .from(sections)
-    .innerJoin(courses, eq(sections.courseId, courses.id))
-    .where(eq(courses.termId, termId))
+    .select({ lesson: lessons, className: classes.name, subjectCode: subjects.code, subjectTitle: subjects.title })
+    .from(lessons)
+    .innerJoin(classes, eq(lessons.classId, classes.id))
+    .innerJoin(subjects, eq(lessons.subjectId, subjects.id))
+    .where(eq(classes.termId, termId))
+    .orderBy(asc(classes.name), asc(subjects.code))
     .all()
-  if (rows.length === 0) return []
-  const ids = rows.map((r) => r.section.id)
-  const meetings = db.select().from(meetingTimes).where(inArray(meetingTimes.sectionId, ids)).all()
-  const meetingsBySection = new Map<number, Meeting[]>()
-  for (const m of meetings) {
-    const arr = meetingsBySection.get(m.sectionId) ?? []
-    arr.push({ days: strToDays(m.days), start: m.startMinute, end: m.endMinute })
-    meetingsBySection.set(m.sectionId, arr)
-  }
-  const instructorRows = db.select().from(instructors).all()
-  const roomRows = db.select().from(rooms).all()
-  const insById = new Map(instructorRows.map((i) => [i.id, i]))
-  const roomById = new Map(roomRows.map((r) => [r.id, r]))
+  const teacherRows = db.select().from(teachers).all()
+  const teacherById = new Map(teacherRows.map((t) => [t.id, t]))
   return rows.map((r) => {
-    const ins = r.section.instructorId !== null ? insById.get(r.section.instructorId) : undefined
-    const room = r.section.roomId !== null ? roomById.get(r.section.roomId) : undefined
+    const days = strToDays(r.lesson.days)
+    const teacher = r.lesson.teacherId !== null ? teacherById.get(r.lesson.teacherId) : undefined
     return {
-      id: r.section.id,
-      courseId: r.courseId,
-      code: r.courseCode,
-      title: r.courseTitle,
-      number: r.section.number,
-      capacity: r.section.capacity,
-      sessionsPerWeek: r.section.sessionsPerWeek,
-      durationMinutes: r.section.durationMinutes,
-      instructorId: r.section.instructorId,
-      roomId: r.section.roomId,
-      locked: r.section.locked === 1,
-      meetings: meetingsBySection.get(r.section.id) ?? [],
-      instructorName: ins?.name ?? null,
-      roomName: room?.name ?? null,
-      travelGroup: room?.travelGroup ?? null
+      id: r.lesson.id,
+      classId: r.lesson.classId,
+      subjectId: r.lesson.subjectId,
+      sessionsPerWeek: r.lesson.sessionsPerWeek,
+      durationMinutes: r.lesson.durationMinutes,
+      teacherId: r.lesson.teacherId,
+      locked: r.lesson.locked === 1,
+      meetings:
+        days.length > 0 && r.lesson.startMinute !== null && r.lesson.endMinute !== null
+          ? [{ days, start: r.lesson.startMinute, end: r.lesson.endMinute }]
+          : [],
+      className: r.className,
+      subjectCode: r.subjectCode,
+      subjectTitle: r.subjectTitle,
+      teacherName: teacher?.name ?? null
     }
   })
 }
@@ -222,7 +196,7 @@ export function registerCatalogIpc(): void {
       db.delete(meetingOverrides)
         .where(
           and(
-            eq(meetingOverrides.sectionId, data.sectionId),
+            eq(meetingOverrides.lessonId, data.lessonId),
             eq(meetingOverrides.week, data.week),
             eq(meetingOverrides.kind, data.kind),
             eq(meetingOverrides.fromDay, data.fromDay)
@@ -230,7 +204,19 @@ export function registerCatalogIpc(): void {
         )
         .run()
     }
-    insertOverride(data.sectionId, data.week, data)
+    db.insert(meetingOverrides)
+      .values({
+        lessonId: data.lessonId,
+        week: data.week,
+        kind: data.kind,
+        fromDay: data.fromDay,
+        toDay: data.toDay,
+        startMinute: data.start,
+        endMinute: data.end,
+        teacherId: data.teacherId,
+        note: data.note ?? ''
+      })
+      .run()
   })
 
   guardedHandle('overrides:update', (_e, id: number, patch: Partial<OverrideInput>) => {
@@ -241,8 +227,7 @@ export function registerCatalogIpc(): void {
     if (patch.toDay !== undefined) set.toDay = patch.toDay
     if (patch.start !== undefined) set.startMinute = patch.start
     if (patch.end !== undefined) set.endMinute = patch.end
-    if (patch.roomId !== undefined) set.roomId = patch.roomId
-    if (patch.instructorId !== undefined) set.instructorId = patch.instructorId
+    if (patch.teacherId !== undefined) set.teacherId = patch.teacherId
     if (patch.note !== undefined) set.note = patch.note
     if (Object.keys(set).length === 0) return
     db.update(meetingOverrides).set(set).where(eq(meetingOverrides.id, id)).run()
@@ -252,140 +237,192 @@ export function registerCatalogIpc(): void {
     getDb().delete(meetingOverrides).where(eq(meetingOverrides.id, id)).run()
   })
 
-  guardedHandle('overrides:resetWeek', (_e, termId: number, week: number, sectionId: number | null) => {
+  guardedHandle('overrides:resetWeek', (_e, termId: number, week: number, lessonId: number | null) => {
     const db = getDb()
     const rows = db
-      .select({ id: meetingOverrides.id, sectionId: meetingOverrides.sectionId })
+      .select({ id: meetingOverrides.id, lessonId: meetingOverrides.lessonId })
       .from(meetingOverrides)
-      .innerJoin(sections, eq(meetingOverrides.sectionId, sections.id))
-      .innerJoin(courses, eq(sections.courseId, courses.id))
-      .where(eq(courses.termId, termId))
+      .innerJoin(lessons, eq(meetingOverrides.lessonId, lessons.id))
+      .innerJoin(classes, eq(lessons.classId, classes.id))
+      .where(eq(classes.termId, termId))
       .all()
-      .filter((r) => r.sectionId !== null)
-    const ids = rows.filter((r) => sectionId === null || r.sectionId === sectionId).map((r) => r.id)
+      .filter((r) => r.lessonId !== null)
+    const ids = rows.filter((r) => lessonId === null || r.lessonId === lessonId).map((r) => r.id)
     if (ids.length > 0) {
       db.delete(meetingOverrides).where(inArray(meetingOverrides.id, ids)).run()
     }
   })
 
-  ipcMain.handle('courses:list', (_e, termId: number) =>
-    getDb().select().from(courses).where(eq(courses.termId, termId)).orderBy(asc(courses.code)).all()
+  ipcMain.handle('classes:list', (_e, termId: number) =>
+    getDb().select().from(classes).where(eq(classes.termId, termId)).orderBy(asc(classes.name)).all()
   )
 
-  guardedHandle('courses:create', (_e, termId: number, data: { code: string; title: string; credits: number }) =>
-    getDb().insert(courses).values({ ...data, termId }).returning().get()
+  guardedHandle(
+  'classes:create',
+    (_e, termId: number, data: { name: string; grade: string; capacity: number; homeroom: string }) =>
+      getDb().insert(classes).values({ ...data, termId }).returning().get()
   )
 
-  guardedHandle('courses:update', (_e, id: number, data: { code: string; title: string; credits: number }) => {
-    getDb().update(courses).set(data).where(eq(courses.id, id)).run()
+  guardedHandle(
+  'classes:update',
+    (_e, id: number, data: { name: string; grade: string; capacity: number; homeroom: string }) => {
+      getDb().update(classes).set(data).where(eq(classes.id, id)).run()
+    }
+  )
+
+  guardedHandle('classes:remove', (_e, id: number) => {
+    getDb().delete(classes).where(eq(classes.id, id)).run()
   })
 
-  guardedHandle('courses:remove', (_e, id: number) => {
-    getDb().delete(courses).where(eq(courses.id, id)).run()
+  ipcMain.handle('subjects:list', (_e, termId: number) =>
+    getDb().select().from(subjects).where(eq(subjects.termId, termId)).orderBy(asc(subjects.code)).all()
+  )
+
+  guardedHandle('subjects:create', (_e, termId: number, data: { code: string; title: string }) =>
+    getDb().insert(subjects).values({ ...data, termId }).returning().get()
+  )
+
+  guardedHandle('subjects:update', (_e, id: number, data: { code: string; title: string }) => {
+    getDb().update(subjects).set(data).where(eq(subjects.id, id)).run()
   })
 
-  ipcMain.handle('instructors:list', () => {
-    const rows = getDb().select().from(instructors).orderBy(asc(instructors.name)).all()
-    return rows.map((r) => ({ ...r, unavailable: parseUnavailable(r.unavailable) }))
+  guardedHandle('subjects:remove', (_e, id: number) => {
+    getDb().delete(subjects).where(eq(subjects.id, id)).run()
+  })
+
+  ipcMain.handle('teachers:list', () => {
+    const rows = getDb().select().from(teachers).orderBy(asc(teachers.name)).all()
+    return rows.map((r) => ({
+      ...r,
+      unavailable: parseUnavailable(r.unavailable),
+      subjectIds: parseSubjectIds(r.subjectIds)
+    }))
   })
 
   guardedHandle(
-  'instructors:create',
-    (_e, data: { name: string; email: string; maxWeeklyHours: number; unavailable: TimeSlot[] }) =>
+  'teachers:create',
+    (
+      _e,
+      data: {
+        name: string
+        email: string
+        maxWeeklyHours: number
+        unavailable: TimeSlot[]
+        subjectIds: number[]
+      }
+    ) =>
       getDb()
-        .insert(instructors)
-        .values({ ...data, unavailable: JSON.stringify(data.unavailable) })
+        .insert(teachers)
+        .values({
+          name: data.name,
+          email: data.email,
+          maxWeeklyHours: data.maxWeeklyHours,
+          unavailable: JSON.stringify(data.unavailable),
+          subjectIds: JSON.stringify(data.subjectIds)
+        })
         .returning()
         .get()
   )
 
   guardedHandle(
-  'instructors:update',
-    (_e, id: number, data: { name: string; email: string; maxWeeklyHours: number; unavailable: TimeSlot[] }) => {
+  'teachers:update',
+    (
+      _e,
+      id: number,
+      data: {
+        name: string
+        email: string
+        maxWeeklyHours: number
+        unavailable: TimeSlot[]
+        subjectIds: number[]
+      }
+    ) => {
       getDb()
-        .update(instructors)
-        .set({ ...data, unavailable: JSON.stringify(data.unavailable) })
-        .where(eq(instructors.id, id))
+        .update(teachers)
+        .set({
+          name: data.name,
+          email: data.email,
+          maxWeeklyHours: data.maxWeeklyHours,
+          unavailable: JSON.stringify(data.unavailable),
+          subjectIds: JSON.stringify(data.subjectIds)
+        })
+        .where(eq(teachers.id, id))
         .run()
     }
   )
 
-  guardedHandle('instructors:remove', (_e, id: number) => {
-    getDb().delete(instructors).where(eq(instructors.id, id)).run()
+  guardedHandle('teachers:remove', (_e, id: number) => {
+    getDb().delete(teachers).where(eq(teachers.id, id)).run()
   })
 
-  ipcMain.handle('rooms:list', () => getDb().select().from(rooms).orderBy(asc(rooms.name)).all())
-
-  guardedHandle('rooms:create', (_e, data: { name: string; building: string; capacity: number; travelGroup: string }) =>
-    getDb().insert(rooms).values(data).returning().get()
-  )
-
-  guardedHandle('rooms:update', (_e, id: number, data: { name: string; building: string; capacity: number; travelGroup: string }) => {
-    getDb().update(rooms).set(data).where(eq(rooms.id, id)).run()
-  })
-
-  guardedHandle('rooms:remove', (_e, id: number) => {
-    getDb().delete(rooms).where(eq(rooms.id, id)).run()
-  })
-
-  ipcMain.handle('sections:list', (_e, termId: number) => listSectionsFull(termId))
+  ipcMain.handle('lessons:list', (_e, termId: number) => listLessonsFull(termId))
 
   guardedHandle(
-  'sections:create',
+  'lessons:create',
     (
       _e,
-      courseId: number,
+      classId: number,
       data: {
-        number: string
-        capacity: number
+        subjectId: number
         sessionsPerWeek: number
         durationMinutes: number
-        instructorId: number | null
-        roomId: number | null
+        teacherId: number | null
+        locked?: boolean
       }
     ) =>
       getDb()
-        .insert(sections)
-        .values({ ...data, courseId, locked: 0 })
+        .insert(lessons)
+        .values({
+          classId,
+          subjectId: data.subjectId,
+          sessionsPerWeek: data.sessionsPerWeek,
+          durationMinutes: data.durationMinutes,
+          teacherId: data.teacherId,
+          locked: data.locked ? 1 : 0
+        })
         .returning()
         .get()
   )
 
   guardedHandle(
-  'sections:update',
+  'lessons:update',
     (
       _e,
       id: number,
       patch: Partial<{
-        number: string
-        capacity: number
+        subjectId: number
         sessionsPerWeek: number
         durationMinutes: number
         locked: boolean
-      }> & { instructorId?: number | null; roomId?: number | null }
+      }> & { teacherId?: number | null }
     ) => {
       const set: Record<string, unknown> = { ...patch }
       if (patch.locked !== undefined) set.locked = patch.locked ? 1 : 0
       getDb()
-        .update(sections)
+        .update(lessons)
         .set(set)
-        .where(eq(sections.id, id))
+        .where(eq(lessons.id, id))
         .run()
     }
   )
 
-  guardedHandle('sections:setMeetings', (_e, id: number, meetings: Meeting[]) => {
-    const db = getDb()
-    db.delete(meetingTimes).where(eq(meetingTimes.sectionId, id)).run()
-    for (const m of meetings) {
-      db.insert(meetingTimes)
-        .values({ sectionId: id, days: daysToStr(m.days), startMinute: m.start, endMinute: m.end })
+  guardedHandle(
+  'lessons:setSchedule',
+    (_e, id: number, days: number[], start: number | null, end: number | null) => {
+      getDb()
+        .update(lessons)
+        .set({
+          days: start !== null && end !== null && days.length > 0 ? daysToStr(days) : '',
+          startMinute: start,
+          endMinute: end
+        })
+        .where(eq(lessons.id, id))
         .run()
     }
-  })
+  )
 
-  guardedHandle('sections:remove', (_e, id: number) => {
-    getDb().delete(sections).where(eq(sections.id, id)).run()
+  guardedHandle('lessons:remove', (_e, id: number) => {
+    getDb().delete(lessons).where(eq(lessons.id, id)).run()
   })
 
   ipcMain.handle('settings:get', () => getSettings())

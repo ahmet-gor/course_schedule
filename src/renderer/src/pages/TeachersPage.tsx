@@ -4,7 +4,7 @@ import { useApp } from '../store/useApp'
 import { Badge, Button, ConfirmDialog, EmptyState, Field, Input, Modal, ToggleGroup, ToggleGroupItem } from '../components/ui'
 import { toHHMM, fromHHMM } from '@shared/time'
 import { DAY_LETTERS, labelDays, useI18n, useT } from '../i18n'
-import type { Instructor, TimeSlot } from '@shared/types'
+import type { Subject, Teacher, TimeSlot } from '@shared/types'
 
 interface SlotDraft {
   days: number[]
@@ -12,50 +12,66 @@ interface SlotDraft {
   end: string
 }
 
-export default function InstructorsPage() {
+export default function TeachersPage() {
+  const currentTermId = useApp((s) => s.currentTermId)
   const toast = useApp((s) => s.toast)
   const t = useT()
   const { locale } = useI18n()
-  const { data: instructors, reload } = useAsync(() => window.api.instructors.list(), [])
-  const [editing, setEditing] = useState<Instructor | null>(null)
+  const { data: teachers, reload } = useAsync(() => window.api.teachers.list(), [])
+  const { data: subjects } = useAsync(() => window.api.subjects.list(currentTermId!), [currentTermId])
+  const [editing, setEditing] = useState<Teacher | null>(null)
   const [creating, setCreating] = useState(false)
-  const [confirming, setConfirming] = useState<Instructor | null>(null)
+  const [confirming, setConfirming] = useState<Teacher | null>(null)
 
-  if (!instructors) return <div className="p-6 text-muted-foreground">{t('common.loading')}</div>
+  if (!teachers) return <div className="p-6 text-muted-foreground">{t('common.loading')}</div>
+
+  const subjectById = new Map((subjects ?? []).map((s) => [s.id, s]))
 
   return (
     <div className="flex flex-col h-full">
       <div className="px-5 py-3 bg-card border-b flex items-center justify-between">
-        <h1 className="font-semibold">{t('instructors.title')}</h1>
+        <h1 className="font-semibold">{t('teachers.title')}</h1>
         <Button variant="primary" onClick={() => setCreating(true)}>
-          {t('instructors.new')}
+          {t('teachers.new')}
         </Button>
       </div>
       <div className="flex-1 overflow-auto p-5">
-        {instructors.length === 0 ? (
-          <EmptyState title={t('instructors.empty')} hint={t('instructors.emptyHint')} />
+        {teachers.length === 0 ? (
+          <EmptyState title={t('teachers.empty')} hint={t('teachers.emptyHint')} />
         ) : (
           <table className="w-full bg-card rounded-lg border text-sm">
             <thead>
               <tr className="bg-muted/50 text-left text-muted-foreground">
-                <th className="px-4 py-2.5 font-medium">{t('instructors.col.name')}</th>
-                <th className="px-4 py-2.5 font-medium">{t('instructors.col.email')}</th>
-                <th className="px-4 py-2.5 font-medium">{t('instructors.col.maxHours')}</th>
-                <th className="px-4 py-2.5 font-medium">{t('instructors.col.unavailable')}</th>
+                <th className="px-4 py-2.5 font-medium">{t('teachers.col.name')}</th>
+                <th className="px-4 py-2.5 font-medium">{t('teachers.col.email')}</th>
+                <th className="px-4 py-2.5 font-medium">{t('teachers.col.maxHours')}</th>
+                <th className="px-4 py-2.5 font-medium">{t('teachers.col.subjects')}</th>
+                <th className="px-4 py-2.5 font-medium">{t('teachers.col.unavailable')}</th>
                 <th className="px-4 py-2.5 font-medium w-44"></th>
               </tr>
             </thead>
             <tbody>
-              {instructors.map((i) => (
-                <tr key={i.id} className="border-t hover:bg-muted/40">
-                  <td className="px-4 py-2.5 font-medium">{i.name}</td>
-                  <td className="px-4 py-2.5 text-muted-foreground">{i.email}</td>
-                  <td className="px-4 py-2.5">{i.maxWeeklyHours}</td>
+              {teachers.map((tc) => (
+                <tr key={tc.id} className="border-t hover:bg-muted/40">
+                  <td className="px-4 py-2.5 font-medium">{tc.name}</td>
+                  <td className="px-4 py-2.5 text-muted-foreground">{tc.email}</td>
+                  <td className="px-4 py-2.5">{tc.maxWeeklyHours}</td>
                   <td className="px-4 py-2.5">
-                    {i.unavailable.length === 0 ? (
+                    {tc.subjectIds.length === 0 ? (
                       <span className="text-muted-foreground">—</span>
                     ) : (
-                      i.unavailable.map((u, idx) => (
+                      tc.subjectIds.map((sid) => (
+                        <Badge key={sid} tone="indigo">
+                          {subjectById.get(sid)?.code ?? '?'}
+                        </Badge>
+                      ))
+                    )}
+                  </td>
+                  <td className="px-4 py-2.5">
+                    {tc.unavailable.length === 0 ? (
+                      <span className="text-muted-foreground">—</span>
+                    ) : (
+                      tc.unavailable.map((u, idx) => (
                         <Badge key={idx} tone="slate">
                           {labelDays(u.days, locale)} {toHHMM(u.start)}–{toHHMM(u.end)}
                         </Badge>
@@ -63,10 +79,10 @@ export default function InstructorsPage() {
                     )}
                   </td>
                   <td className="px-4 py-2.5 text-right space-x-2 whitespace-nowrap">
-                    <Button size="sm" onClick={() => setEditing(i)}>{t('common.edit')}</Button>
+                    <Button size="sm" onClick={() => setEditing(tc)}>{t('common.edit')}</Button>
                     <Button
                       variant="danger" size="sm"
-                      onClick={() => setConfirming(i)}
+                      onClick={() => setConfirming(tc)}
                     >
                       {t('common.delete')}
                     </Button>
@@ -80,21 +96,22 @@ export default function InstructorsPage() {
       {confirming && (
         <ConfirmDialog
           title={t('common.confirmTitle')}
-          description={t('instructor.confirmDelete', { name: confirming.name })}
+          description={t('teacher.confirmDelete', { name: confirming.name })}
           confirmLabel={t('common.delete')}
           cancelLabel={t('common.cancel')}
           onClose={() => setConfirming(null)}
           onConfirm={async () => {
-            await window.api.instructors.remove(confirming.id)
+            await window.api.teachers.remove(confirming.id)
             setConfirming(null)
             reload()
-            toast(t('instructor.deleted'), 'success')
+            toast(t('teacher.deleted'), 'success')
           }}
         />
       )}
-      {(creating || editing) && (
-        <InstructorDialog
-          instructor={editing}
+      {(creating || editing) && subjects && (
+        <TeacherDialog
+          teacher={editing}
+          subjects={subjects}
           onDone={(message) => {
             setCreating(false)
             setEditing(null)
@@ -107,21 +124,24 @@ export default function InstructorsPage() {
   )
 }
 
-function InstructorDialog({
-  instructor,
+function TeacherDialog({
+  teacher,
+  subjects,
   onDone
 }: {
-  instructor: Instructor | null
+  teacher: Teacher | null
+  subjects: Subject[]
   onDone: (message?: string) => void
 }) {
   const t = useT()
   const { locale } = useI18n()
   const letters = DAY_LETTERS[locale]
-  const [name, setName] = useState(instructor?.name ?? '')
-  const [email, setEmail] = useState(instructor?.email ?? '')
-  const [maxHours, setMaxHours] = useState(String(instructor?.maxWeeklyHours ?? 12))
+  const [name, setName] = useState(teacher?.name ?? '')
+  const [email, setEmail] = useState(teacher?.email ?? '')
+  const [maxHours, setMaxHours] = useState(String(teacher?.maxWeeklyHours ?? 20))
+  const [subjectIds, setSubjectIds] = useState<number[]>(teacher?.subjectIds ?? [])
   const [slots, setSlots] = useState<SlotDraft[]>(
-    (instructor?.unavailable ?? []).map((u) => ({ days: [...u.days], start: toHHMM(u.start), end: toHHMM(u.end) }))
+    (teacher?.unavailable ?? []).map((u) => ({ days: [...u.days], start: toHHMM(u.start), end: toHHMM(u.end) }))
   )
   const [busy, setBusy] = useState(false)
 
@@ -140,12 +160,13 @@ function InstructorDialog({
       const payload = {
         name: name.trim(),
         email: email.trim(),
-        maxWeeklyHours: parseFloat(maxHours) || 12,
-        unavailable
+        maxWeeklyHours: parseFloat(maxHours) || 20,
+        unavailable,
+        subjectIds
       }
-      if (instructor) await window.api.instructors.update(instructor.id, payload)
-      else await window.api.instructors.create(payload)
-      onDone(t('instructor.saved', { name: payload.name }))
+      if (teacher) await window.api.teachers.update(teacher.id, payload)
+      else await window.api.teachers.create(payload)
+      onDone(t('teacher.saved', { name: payload.name }))
     } catch (err) {
       useApp.getState().toast(String(err), 'error')
       setBusy(false)
@@ -153,22 +174,37 @@ function InstructorDialog({
   }
 
   return (
-    <Modal title={instructor ? t('instructors.editTitle', { name: instructor.name }) : t('instructors.newTitle')} onClose={() => onDone()}>
+    <Modal title={teacher ? t('teachers.editTitle', { name: teacher.name }) : t('teachers.newTitle')} onClose={() => onDone()}>
       <div className="flex flex-col gap-3">
-        <Field label={t('instructors.name')}>
-          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder={t('instructors.namePlaceholder')} />
+        <Field label={t('teachers.name')}>
+          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder={t('teachers.namePlaceholder')} />
         </Field>
-        <Field label={t('instructors.email')}>
-          <Input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="ornek@uni.edu.tr" />
+        <Field label={t('teachers.email')}>
+          <Input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="ornek@okul.edu.tr" />
         </Field>
-        <Field label={t('instructors.maxHours')} hint={t('instructors.maxHoursHint')}>
+        <Field label={t('teachers.maxHours')} hint={t('teachers.maxHoursHint')}>
           <Input type="number" min="1" max="40" step="0.5" value={maxHours} onChange={(e) => setMaxHours(e.target.value)} />
+        </Field>
+        <Field label={t('teachers.subjects')} hint={t('teachers.subjectsHint')}>
+          <ToggleGroup
+            type="multiple"
+            variant="outline"
+            value={subjectIds.map(String)}
+            onValueChange={(vals) => setSubjectIds(vals.map(Number))}
+            className="bg-transparent gap-1 flex-wrap justify-start h-auto"
+          >
+            {subjects.map((s) => (
+              <ToggleGroupItem key={s.id} value={String(s.id)} className="h-7 px-2 text-xs font-semibold">
+                {s.code}
+              </ToggleGroupItem>
+            ))}
+          </ToggleGroup>
         </Field>
         <div>
           <div className="flex items-center justify-between mb-2">
-            <span className="font-medium text-muted-foreground text-sm">{t('instructors.unavailable')}</span>
+            <span className="font-medium text-muted-foreground text-sm">{t('teachers.unavailable')}</span>
             <Button onClick={() => setSlots([...slots, { days: [1], start: '08:00', end: '12:00' }])}>
-              {t('instructors.addUnavailable')}
+              {t('teachers.addUnavailable')}
             </Button>
           </div>
           {slots.map((s, idx) => (

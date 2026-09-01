@@ -6,10 +6,9 @@ import { useT } from '../i18n'
 
 const NAV: { page: Page; labelKey: Parameters<ReturnType<typeof useT>>[0] }[] = [
   { page: 'timetables', labelKey: 'nav.timetables' },
-  { page: 'sections', labelKey: 'nav.sections' },
-  { page: 'courses', labelKey: 'nav.courses' },
-  { page: 'instructors', labelKey: 'nav.instructors' },
-  { page: 'rooms', labelKey: 'nav.rooms' },
+  { page: 'classes', labelKey: 'nav.classes' },
+  { page: 'subjects', labelKey: 'nav.subjects' },
+  { page: 'teachers', labelKey: 'nav.teachers' },
   { page: 'generate', labelKey: 'nav.generate' },
   { page: 'settings', labelKey: 'nav.settings' }
 ]

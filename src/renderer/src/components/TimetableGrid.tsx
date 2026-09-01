@@ -4,16 +4,16 @@ import { DAY_SHORT, useI18n } from '../i18n'
 import { layoutDayMeetings } from '../lib/gridLayout'
 
 export interface GridMeeting {
-  sectionId: number
+  lessonId: number
   occKey?: string
   label: string
   title: string
   days: number[]
   start: number
   end: number
-  roomLabel: string
-  instructorLabel: string
-  courseCode: string
+  teacherLabel: string
+  classLabel: string
+  subjectCode: string
   dimmed?: boolean
   cancelled?: boolean
   badge?: 'moved' | 'extra' | 'cancelled'
@@ -21,7 +21,7 @@ export interface GridMeeting {
 
 export interface DropInfo {
   occKey: string
-  sectionId: number
+  lessonId: number
   day: number
   start: number
   end: number
@@ -29,7 +29,7 @@ export interface DropInfo {
 
 export interface DropCandidate {
   occKey: string
-  sectionId: number
+  lessonId: number
   day: number
   start: number
   end: number
@@ -42,8 +42,8 @@ const DRAG_THRESHOLD_PX = 5
 interface DragState {
   message: string
   occKey: string
-  sectionId: number
-  courseCode: string
+  lessonId: number
+  subjectCode: string
   hue: number
   duration: number
   rect: { width: number; height: number }
@@ -62,7 +62,7 @@ export default function TimetableGrid({
   meetings,
   dayStart,
   dayEnd,
-  conflictsBySection,
+  conflictsByLesson,
   selectedId,
   onSelect,
   daySublabels,
@@ -74,9 +74,9 @@ export default function TimetableGrid({
   meetings: GridMeeting[]
   dayStart: number
   dayEnd: number
-  conflictsBySection?: Record<number, string[]>
+  conflictsByLesson?: Record<number, string[]>
   selectedId?: number | null
-  onSelect?: (sectionId: number, occKey?: string) => void
+  onSelect?: (lessonId: number, occKey?: string) => void
   daySublabels?: Record<number, string>
   dragEnabled?: boolean
   snapMinutes?: number
@@ -90,7 +90,7 @@ export default function TimetableGrid({
   const dragRef = useRef<DragState | null>(null)
   dragRef.current = drag
   const justDraggedAt = useRef(0)
-  const [popSectionId, setPopSectionId] = useState<number | null>(null)
+  const [popLessonId, setPopLessonId] = useState<number | null>(null)
 
   const days = useMemo(() => {
     const present = new Set<number>()
@@ -143,7 +143,7 @@ export default function TimetableGrid({
         let valid = d.valid
         if (hit) {
           valid = validateDrop
-            ? validateDrop({ occKey: d.occKey, sectionId: d.sectionId, day, start, end })
+            ? validateDrop({ occKey: d.occKey, lessonId: d.lessonId, day, start, end })
             : true
         }
         return { ...d, x: e.clientX, y: e.clientY, day, start, over: !!hit, valid, moved }
@@ -155,11 +155,11 @@ export default function TimetableGrid({
       if (!d || !d.moved) return
       justDraggedAt.current = Date.now()
       if (!d.over || !onDrop) return
-      setPopSectionId(d.sectionId)
-      setTimeout(() => setPopSectionId(null), 400)
+      setPopLessonId(d.lessonId)
+      setTimeout(() => setPopLessonId(null), 400)
       onDrop({
         occKey: d.occKey,
-        sectionId: d.sectionId,
+        lessonId: d.lessonId,
         day: d.day,
         start: d.start,
         end: d.start + d.duration
@@ -181,9 +181,9 @@ export default function TimetableGrid({
     setDrag({
       message: m.label,
       occKey: m.occKey,
-      sectionId: m.sectionId,
-      courseCode: m.courseCode,
-      hue: hashString(m.courseCode) % 360,
+      lessonId: m.lessonId,
+      subjectCode: m.subjectCode,
+      hue: hashString(m.subjectCode) % 360,
       duration: m.end - m.start,
       rect: { width: rect.width, height: rect.height },
       x0: e.clientX,
@@ -263,24 +263,24 @@ export default function TimetableGrid({
                   </div>
                 )}
                 {(byDay.get(d) ?? []).map(({ m, left, width }) => {
-                  const hue = hashString(m.courseCode) % 360
-                  const hasConflict = (conflictsBySection?.[m.sectionId] ?? []).length > 0
+                  const hue = hashString(m.subjectCode) % 360
+                  const hasConflict = (conflictsByLesson?.[m.lessonId] ?? []).length > 0
                   const isDragSource = dragging && drag.occKey === m.occKey
                   return (
                     <button
-                      key={`${m.sectionId}-${m.occKey ?? d}`}
+                      key={`${m.lessonId}-${m.occKey ?? d}`}
                       onPointerDown={(e) => beginDrag(e, m)}
                       onClick={() => {
                         if (swallowClick()) return
-                        onSelect?.(m.sectionId, m.occKey)
+                        onSelect?.(m.lessonId, m.occKey)
                       }}
-                      title={`${m.label} ${toHHMM(m.start)}-${toHHMM(m.end)}\n${m.title}\n${m.instructorLabel} · ${m.roomLabel}${
-                        hasConflict ? '\n' + conflictsBySection![m.sectionId].join('; ') : ''
+                      title={`${m.label} ${toHHMM(m.start)}-${toHHMM(m.end)}\n${m.title}\n${m.teacherLabel}${
+                        hasConflict ? '\n' + conflictsByLesson![m.lessonId].join('; ') : ''
                       }`}
                       className={`absolute rounded-md border overflow-hidden text-left px-1.5 py-1 hover:shadow-md select-none touch-none transition-[opacity,transform,box-shadow] duration-150 motion-reduce:transition-none ${
                         m.cancelled ? 'border-dashed' : ''
-                      } ${popSectionId === m.sectionId ? 'grid-pop' : ''} ${
-                        selectedId === m.sectionId ? 'ring-2 ring-offset-1 ring-primary z-10' : ''
+                      } ${popLessonId === m.lessonId ? 'grid-pop' : ''} ${
+                        selectedId === m.lessonId ? 'ring-2 ring-offset-1 ring-primary z-10' : ''
                       } ${dragEnabled && !m.cancelled ? 'cursor-grab active:cursor-grabbing' : ''}`}
                       style={{
                         top: (m.start - dayStart) * PX_PER_MIN,
@@ -320,7 +320,7 @@ export default function TimetableGrid({
                         </div>
                       )}
                       {(m.end - m.start) * PX_PER_MIN > 48 && (
-                        <div className="text-[10px] leading-tight truncate opacity-80">{m.roomLabel}</div>
+                        <div className="text-[10px] leading-tight truncate opacity-80">{m.teacherLabel}</div>
                       )}
                     </button>
                   )

@@ -2,27 +2,15 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useApp } from '../store/useApp'
 import { useAsync } from '../components/Layout'
 import TimetableGrid from '../components/TimetableGrid'
-import { Badge, Button, Checkbox, EmptyState, Field, Input, Select, SelectOption, ToggleGroup, ToggleGroupItem } from '../components/ui'
-import { weekOccurrences } from '../lib/schedule'
+import { Badge, Button, Checkbox, EmptyState, Field, Input, Tabs, TabsList, TabsTrigger, ToggleGroup, ToggleGroupItem } from '../components/ui'
+import { lessonCode } from '../lib/schedule'
 import { summaryText, useI18n, useT } from '../i18n'
-import { isBreakWeek, weekLabel } from '@shared/weeks'
 import type { SolverResponse } from '../solver/solver.worker'
-import type { FixSection, FlexSection, SectionFull, Solution } from '@shared/types'
+import type { ClassSolution, LessonFull, PlacedLesson, TeacherSolution } from '@shared/types'
 import type { GridMeeting } from '../components/TimetableGrid'
 
+type Stage = 'classes' | 'teachers'
 type Phase = 'idle' | 'running' | 'done' | 'problems' | 'error'
-type Target = 'pattern' | number
-
-function initialTarget(): Target {
-  try {
-    const v = localStorage.getItem('generateTarget')
-    if (v === 'pattern') return 'pattern'
-    const n = parseInt(v ?? '', 10)
-    return Number.isFinite(n) && n >= 1 ? n : 'pattern'
-  } catch {
-    return 'pattern'
-  }
-}
 
 export default function GeneratePage() {
   const currentTermId = useApp((s) => s.currentTermId)
@@ -30,252 +18,216 @@ export default function GeneratePage() {
   const t = useT()
   const { locale } = useI18n()
   const { data, reload } = useAsync(() => window.api.schedule.getData(currentTermId!), [currentTermId])
-  const [target, setTarget] = useState<Target>(initialTarget)
-  const [include, setInclude] = useState<Record<number, boolean> | null>(null)
+  const [stage, setStage] = useState<Stage>('classes')
+  const [includeClasses, setIncludeClasses] = useState<Record<number, boolean> | null>(null)
   const [timeLimitSec, setTimeLimitSec] = useState<number>(8)
   const [phase, setPhase] = useState<Phase>('idle')
   const [progress, setProgress] = useState({ nodes: 0, solutions: 0 })
   const [problems, setProblems] = useState<string[]>([])
-  const [solutions, setSolutions] = useState<Solution[]>([])
+  const [classSolutions, setClassSolutions] = useState<ClassSolution[]>([])
+  const [teacherSolutions, setTeacherSolutions] = useState<TeacherSolution[]>([])
   const [selected, setSelected] = useState<number>(0)
   const workerRef = useRef<Worker | null>(null)
 
-  const sections = data?.sections ?? []
-  const targetWeek = typeof target === 'number' ? target : null
-  const weekIsBreak = data !== null && targetWeek !== null && isBreakWeek(data.term, targetWeek)
-
-  const fixed = useMemo(() => sections.filter((s) => s.meetings.length > 0 && s.locked), [sections])
-  const unlockedScheduled = useMemo(() => sections.filter((s) => s.meetings.length > 0 && !s.locked), [sections])
-  const unscheduled = useMemo(() => sections.filter((s) => s.meetings.length === 0), [sections])
-
-  const weekPairs = useMemo(
-    () => (data && targetWeek !== null ? weekOccurrences(data, targetWeek) : []),
-    [data, targetWeek]
+  const lessons = data?.lessons ?? []
+  const scheduled = useMemo(() => lessons.filter((l) => l.meetings.length > 0), [lessons])
+  const unassignedLessons = useMemo(() => scheduled.filter((l) => l.teacherId === null), [scheduled])
+  const lockedAssignments = useMemo(
+    () => scheduled.filter((l) => l.locked && l.teacherId !== null),
+    [scheduled]
   )
 
   useEffect(() => {
-    try {
-      localStorage.setItem('generateTarget', String(target))
-    } catch {
-      /* storage unavailable */
-    }
-  }, [target])
-
-  useEffect(() => {
-    if (!data) return
-    if (typeof target === 'number' && target > data.term.weeks) setTarget('pattern')
-  }, [data, target])
-
-  useEffect(() => {
-    if (data && include === null) {
+    if (data && includeClasses === null) {
       const initial: Record<number, boolean> = {}
-      for (const s of data.sections) {
-        initial[s.id] = target === 'pattern' ? s.meetings.length === 0 && !s.locked : false
+      for (const c of data.classes) {
+        const cls = data.lessons.filter((l) => l.classId === c.id)
+        initial[c.id] = cls.some((l) => l.meetings.length === 0)
       }
-      setInclude(initial)
+      setIncludeClasses(initial)
     }
-  }, [data, include, target])
+  }, [data, includeClasses])
 
   useEffect(() => () => workerRef.current?.terminate(), [])
 
-  const solution = solutions[selected] ?? null
+  const classSolution = classSolutions[selected] ?? null
+  const teacherSolution = teacherSolutions[selected] ?? null
 
-  const selectedIds = useMemo(
+  const selectedClassIds = useMemo(
     () =>
-      include
-        ? Object.entries(include)
+      includeClasses
+        ? Object.entries(includeClasses)
             .filter(([, on]) => on)
             .map(([id]) => Number(id))
         : [],
-    [include]
+    [includeClasses]
   )
 
-  const patternPreviewMeetings: GridMeeting[] = useMemo(() => {
-    if (!solution || !data || targetWeek !== null) return []
-    const roomById = new Map(data.rooms.map((r) => [r.id, r]))
-    const insById = new Map(data.instructors.map((i) => [i.id, i]))
-    const byId = new Map(sections.map((s) => [s.id, s]))
-    const fixedMeetings = fixed.map((s) => ({
-      sectionId: s.id,
-      label: `${s.code}-${s.number}`,
-      title: s.title,
-      days: s.meetings.flatMap((m) => m.days),
-      start: s.meetings[0]?.start ?? 0,
-      end: s.meetings[0]?.end ?? 0,
-      roomLabel: s.roomName ?? '—',
-      instructorLabel: s.instructorName ?? '—',
-      courseCode: s.code,
-      dimmed: true
-    }))
-    const flexMeetings = Object.entries(solution.assignments).map(([id, a]) => {
-      const s = byId.get(Number(id)) as SectionFull
-      const room = roomById.get(a.roomId)
-      const ins = insById.get(a.instructorId)
-      return {
-        sectionId: s.id,
-        label: `${s.code}-${s.number}`,
-        title: s.title,
-        days: [...a.days],
-        start: a.start,
-        end: a.end,
-        roomLabel: room?.name ?? '—',
-        instructorLabel: ins?.name ?? '—',
-        courseCode: s.code,
-        dimmed: false
-      }
-    })
-    return [...fixedMeetings, ...flexMeetings]
-  }, [solution, data, sections, fixed, targetWeek])
-
-  const weekPreviewMeetings: GridMeeting[] = useMemo(() => {
-    if (!solution || !data || targetWeek === null) return []
-    const roomById = new Map(data.rooms.map((r) => [r.id, r]))
-    const insById = new Map(data.instructors.map((i) => [i.id, i]))
-    const fixedPairs = weekPairs.filter((p) => !selectedIds.includes(p.section.id) || p.section.locked)
-    const fixedMeetings = fixedPairs
-      .filter((p) => !p.occ.cancelled)
-      .map((p) => ({
-        sectionId: p.section.id,
-        occKey: p.occ.key,
-        label: `${p.section.code}-${p.section.number}`,
-        title: p.section.title,
-        days: [p.occ.day],
-        start: p.occ.start,
-        end: p.occ.end,
-        roomLabel: p.occ.roomId !== null ? roomById.get(p.occ.roomId)?.name ?? '—' : '—',
-        instructorLabel: p.occ.instructorId !== null ? insById.get(p.occ.instructorId)?.name ?? '—' : '—',
-        courseCode: p.section.code,
-        dimmed: true
-      }))
-    const byId = new Map(sections.map((s) => [s.id, s]))
-    const flexMeetings = Object.entries(solution.assignments).flatMap(([id, a]) => {
-      const s = byId.get(Number(id))
-      if (!s) return []
-      const room = roomById.get(a.roomId)
-      const ins = insById.get(a.instructorId)
-      return a.days.map((d) => ({
-        sectionId: s.id,
-        label: `${s.code}-${s.number}`,
-        title: s.title,
-        days: [d],
-        start: a.start,
-        end: a.end,
-        roomLabel: room?.name ?? '—',
-        instructorLabel: ins?.name ?? '—',
-        courseCode: s.code,
-        dimmed: false
-      }))
-    })
-    return [...fixedMeetings, ...flexMeetings]
-  }, [solution, data, sections, weekPairs, selectedIds, targetWeek])
-
-  const previewMeetings = targetWeek === null ? patternPreviewMeetings : weekPreviewMeetings
+  const previewMeetings: GridMeeting[] = useMemo(() => {
+    if (!data) return []
+    const byId = new Map(lessons.map((l) => [l.id, l]))
+    if (stage === 'classes') {
+      if (!classSolution) return []
+      const fixedMeetings = lessons
+        .filter((l) => l.locked && l.meetings.length > 0)
+        .map((l) => ({
+          lessonId: l.id,
+          label: lessonCode(l),
+          title: l.subjectTitle,
+          days: l.meetings.flatMap((m) => m.days),
+          start: l.meetings[0]?.start ?? 0,
+          end: l.meetings[0]?.end ?? 0,
+          teacherLabel: l.teacherName ?? '—',
+          classLabel: l.className,
+          subjectCode: l.subjectCode,
+          dimmed: true
+        }))
+      const placed = Object.entries(classSolution.assignments).map(([id, a]) => {
+        const l = byId.get(Number(id)) as LessonFull
+        return {
+          lessonId: l.id,
+          label: lessonCode(l),
+          title: l.subjectTitle,
+          days: [...a.days],
+          start: a.start,
+          end: a.end,
+          teacherLabel: l.teacherName ?? '—',
+          classLabel: l.className,
+          subjectCode: l.subjectCode,
+          dimmed: false
+        }
+      })
+      return [...fixedMeetings, ...placed]
+    } else {
+      if (!teacherSolution) return []
+      const teacherById = new Map(data.teachers.map((tc) => [tc.id, tc]))
+      return scheduled.map((l) => {
+        const assigned = teacherSolution.assignments[String(l.id)]
+        const tid = assigned !== undefined ? assigned : l.teacherId
+        const teacher = tid !== null ? teacherById.get(tid) : undefined
+        return {
+          lessonId: l.id,
+          label: lessonCode(l),
+          title: l.subjectTitle,
+          days: l.meetings.flatMap((m) => m.days),
+          start: l.meetings[0]?.start ?? 0,
+          end: l.meetings[0]?.end ?? 0,
+          teacherLabel: teacher?.name ?? '—',
+          classLabel: l.className,
+          subjectCode: l.subjectCode,
+          dimmed: assigned === undefined
+        }
+      })
+    }
+  }, [data, stage, classSolution, teacherSolution, lessons, scheduled])
 
   if (!data) return <div className="p-6 text-muted-foreground">{t('common.loading')}</div>
-  if (include === null) return <div className="p-6 text-muted-foreground">{t('common.loading')}</div>
+  if (includeClasses === null) return <div className="p-6 text-muted-foreground">{t('common.loading')}</div>
 
-  const run = () => {
-    if (selectedIds.length === 0) {
+  const runClasses = () => {
+    if (selectedClassIds.length === 0) {
       toast(t('generate.selectFirst'), 'error')
-      return
-    }
-    if (targetWeek !== null && weekIsBreak) {
-      toast(t('timetable.week.breakNotice'), 'error')
       return
     }
     const worker = new Worker(new URL('../solver/solver.worker.ts', import.meta.url), { type: 'module' })
     workerRef.current = worker
     setPhase('running')
-    setSolutions([])
+    setClassSolutions([])
     setProblems([])
     setProgress({ nodes: 0, solutions: 0 })
-
     const settings = {
       ...data.settings,
       solver: { ...data.settings.solver, timeLimitMs: timeLimitSec * 1000 }
     }
-    let solverFixed: FixSection[] = []
-    let solverFlexible: FlexSection[] = []
-    if (targetWeek === null) {
-      solverFixed = fixed.map((s) => ({
-        id: s.id,
-        courseId: s.courseId,
-        code: `${s.code}-${s.number}`,
-        meetings: s.meetings,
-        roomId: s.roomId,
-        instructorId: s.instructorId
+    const flexible = lessons
+      .filter((l) => selectedClassIds.includes(l.classId) && !l.locked)
+      .map((l) => ({
+        id: l.id,
+        classId: l.classId,
+        subjectId: l.subjectId,
+        code: lessonCode(l),
+        sessionsPerWeek: l.sessionsPerWeek,
+        durationMinutes: l.durationMinutes
       }))
-      solverFlexible = sections
-        .filter((s) => selectedIds.includes(s.id) && !s.locked)
-        .map((s) => ({
-          id: s.id,
-          courseId: s.courseId,
-          code: `${s.code}-${s.number}`,
-          capacity: s.capacity,
-          sessionsPerWeek: s.sessionsPerWeek,
-          durationMinutes: s.durationMinutes,
-          instructorId: s.instructorId,
-          roomId: s.roomId
-        }))
-    } else {
-      solverFixed = weekPairs
-        .filter((p) => !p.occ.cancelled)
-        .filter((p) => !selectedIds.includes(p.section.id) || p.section.locked)
-        .map((p, i) => ({
-          id: -(i + 1),
-          courseId: p.section.courseId,
-          code: `${p.section.code}-${p.section.number}`,
-          meetings: [{ days: [p.occ.day], start: p.occ.start, end: p.occ.end }],
-          roomId: p.occ.roomId,
-          instructorId: p.occ.instructorId
-        }))
-      solverFlexible = sections
-        .filter((s) => selectedIds.includes(s.id) && !s.locked)
-        .map((s) => ({
-          id: s.id,
-          courseId: s.courseId,
-          code: `${s.code}-${s.number}`,
-          capacity: s.capacity,
-          sessionsPerWeek: s.sessionsPerWeek,
-          durationMinutes: s.durationMinutes,
-          instructorId: s.instructorId,
-          roomId: s.roomId
-        }))
-    }
-
-    worker.onmessage = (e: MessageEvent<SolverResponse>) => {
-      const msg = e.data
-      if (msg.type === 'progress') {
-        setProgress({ nodes: msg.nodes, solutions: msg.solutions })
-      } else if (msg.type === 'problems') {
-        setProblems(msg.problems)
-        setPhase('problems')
-        worker.terminate()
-      } else if (msg.type === 'done') {
-        setSolutions(msg.result.solutions)
-        setProblems(msg.result.problems)
-        setSelected(0)
-        setPhase('done')
-        worker.terminate()
-        if (msg.result.solutions.length === 0) {
-          toast(t('generate.noResults'), 'error')
-        }
-      } else if (msg.type === 'error') {
-        toast(msg.message, 'error')
-        setPhase('error')
-        worker.terminate()
-      }
-    }
+    const fixed = lessons
+      .filter((l) => l.locked && l.meetings.length > 0)
+      .map((l) => ({
+        id: l.id,
+        classId: l.classId,
+        subjectId: l.subjectId,
+        code: lessonCode(l),
+        meetings: l.meetings
+      }))
+    worker.onmessage = handleWorkerMessage('classes', worker)
     worker.postMessage({
-      type: 'solve',
+      type: 'solveClasses',
       input: {
         settings,
-        rooms: data.rooms,
-        instructors: data.instructors,
-        fixed: solverFixed,
-        flexible: solverFlexible
+        classes: data.classes.map((c) => ({ id: c.id, name: c.name })),
+        flexible,
+        fixed
       }
     })
+  }
+
+  const runTeachers = () => {
+    if (scheduled.length === 0) {
+      toast(t('generate.teachers.notReady'), 'error')
+      return
+    }
+    const worker = new Worker(new URL('../solver/solver.worker.ts', import.meta.url), { type: 'module' })
+    workerRef.current = worker
+    setPhase('running')
+    setTeacherSolutions([])
+    setProblems([])
+    setProgress({ nodes: 0, solutions: 0 })
+    const settings = {
+      ...data.settings,
+      solver: { ...data.settings.solver, timeLimitMs: timeLimitSec * 1000 }
+    }
+    const placed: PlacedLesson[] = scheduled.map((l) => ({
+      id: l.id,
+      classId: l.classId,
+      subjectId: l.subjectId,
+      code: lessonCode(l),
+      sessionsPerWeek: l.sessionsPerWeek,
+      durationMinutes: l.durationMinutes,
+      meetings: l.meetings,
+      teacherId: l.teacherId,
+      fixed: l.locked && l.teacherId !== null
+    }))
+    worker.onmessage = handleWorkerMessage('teachers', worker)
+    worker.postMessage({ type: 'solveTeachers', input: { settings, teachers: data.teachers, lessons: placed } })
+  }
+
+  const handleWorkerMessage = (kind: Stage, worker: Worker) => (e: MessageEvent<SolverResponse>) => {
+    const msg = e.data
+    if (msg.type === 'progress') {
+      setProgress({ nodes: msg.nodes, solutions: msg.solutions })
+    } else if (msg.type === 'problems') {
+      setProblems(msg.problems)
+      setPhase('problems')
+      worker.terminate()
+    } else if (msg.type === 'done') {
+      setSelected(0)
+      setPhase('done')
+      worker.terminate()
+      if (msg.kind === 'classes') {
+        const result = msg.result as { solutions: ClassSolution[]; problems: string[] }
+        setClassSolutions(result.solutions)
+        setProblems(result.problems)
+        if (result.solutions.length === 0) toast(t('generate.noResults'), 'error')
+      } else {
+        const result = msg.result as { solutions: TeacherSolution[]; problems: string[] }
+        setTeacherSolutions(result.solutions)
+        setProblems(result.problems)
+        if (result.solutions.length === 0) toast(t('generate.noResults'), 'error')
+      }
+    } else if (msg.type === 'error') {
+      toast(msg.message, 'error')
+      setPhase('error')
+      worker.terminate()
+    }
   }
 
   const cancel = () => {
@@ -284,53 +236,45 @@ export default function GeneratePage() {
   }
 
   const apply = async () => {
-    if (!solution) return
     try {
-      if (targetWeek === null) {
-        const cleared = await window.api.schedule.apply(currentTermId!, solution.assignments)
+      if (stage === 'classes') {
+        if (!classSolution) return
+        const cleared = await window.api.schedule.applyClasses(currentTermId!, classSolution.assignments)
         toast(
           cleared > 0 ? t('toast.overridesCleared', { count: cleared }) : t('toast.scheduleApplied'),
           'success'
         )
       } else {
-        await window.api.schedule.resolveWeek(currentTermId!, targetWeek, solution.assignments)
-        toast(t('toast.scheduleApplied'), 'success')
+        if (!teacherSolution) return
+        await window.api.schedule.assignTeachers(currentTermId!, teacherSolution.assignments)
+        toast(t('toast.teachersAssigned'), 'success')
       }
       reload()
       setPhase('idle')
-      setSolutions([])
+      setClassSolutions([])
+      setTeacherSolutions([])
     } catch (err) {
       toast(String(err), 'error')
     }
   }
 
-  const weeksList = Array.from({ length: data.term.weeks }, (_, i) => i + 1)
-  const weekSelectable = targetWeek === null ? sections : [...unscheduled, ...unlockedScheduled]
+  const solutionCount = stage === 'classes' ? classSolutions.length : teacherSolutions.length
+  const activeSolution = stage === 'classes' ? classSolution : teacherSolution
 
   return (
     <div className="flex h-full">
       <div className="w-96 shrink-0 border-r bg-card flex flex-col overflow-y-auto">
         <div className="px-4 py-3 border-b">
           <h1 className="font-semibold">{t('generate.title')}</h1>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            {targetWeek === null ? t('generate.desc') : t('generate.week.desc')}
+          <Tabs value={stage} onValueChange={(v) => { setStage(v as Stage); setPhase('idle'); setProblems([]) }}>
+            <TabsList className="mt-2">
+              <TabsTrigger value="classes">{t('generate.stage.classes')}</TabsTrigger>
+              <TabsTrigger value="teachers">{t('generate.stage.teachers')}</TabsTrigger>
+            </TabsList>
+          </Tabs>
+          <p className="text-xs text-muted-foreground mt-2">
+            {stage === 'classes' ? t('generate.classes.desc') : t('generate.teachers.desc')}
           </p>
-        </div>
-
-        <div className="px-4 py-3 border-b">
-          <Field label={t('generate.target')}>
-            <Select
-              value={targetWeek === null ? 'pattern' : String(targetWeek)}
-              onChange={(v) => setTarget(v === 'pattern' ? 'pattern' : Number(v))}
-            >
-              <SelectOption value="pattern">{t('generate.target.template')}</SelectOption>
-              {weeksList.map((w) => (
-                <SelectOption key={w} value={String(w)} disabled={isBreakWeek(data.term, w)}>
-                  {`W${String(w).padStart(2, '0')} · ${weekLabel(data.term, w, locale)}`}
-                </SelectOption>
-              ))}
-            </Select>
-          </Field>
         </div>
 
         <div className="px-4 py-3 border-b flex items-center gap-2">
@@ -347,72 +291,76 @@ export default function GeneratePage() {
         </div>
 
         <div className="flex-1 overflow-y-auto">
-          {targetWeek === null ? (
-            <>
-              {fixed.length > 0 && (
-                <div className="px-4 py-3 border-b">
-                  <p className="text-xs font-semibold text-amber-600 uppercase tracking-wide mb-1">
-                    {t('generate.fixed', { count: fixed.length })}
+          {stage === 'classes' ? (
+            data.classes.length === 0 ? (
+              <EmptyState title={t('classes.empty')} hint={t('classes.emptyHint')} />
+            ) : (
+              <div className="px-4 py-3">
+                {lessons
+                  .filter((l) => l.locked && l.meetings.length > 0)
+                  .length > 0 && (
+                  <p className="text-xs font-semibold text-amber-600 uppercase tracking-wide mb-2">
+                    {t('generate.classes.fixed', {
+                      count: lessons.filter((l) => l.locked && l.meetings.length > 0).length
+                    })}
                   </p>
-                  {fixed.map((s) => (
-                    <SectionRow key={s.id} section={s} locked />
-                  ))}
-                </div>
-              )}
-              {unscheduled.length > 0 && (
-                <div className="px-4 py-3 border-b">
-                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1">
-                    {t('generate.unscheduled', { count: unscheduled.length })}
-                  </p>
-                  {unscheduled.map((s) => (
-                    <SectionRow
-                      key={s.id}
-                      section={s}
-                      checked={include[s.id] ?? false}
-                      onToggle={(v) => setInclude({ ...include, [s.id]: v })}
-                    />
-                  ))}
-                </div>
-              )}
-              {unlockedScheduled.length > 0 && (
-                <div className="px-4 py-3">
-                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1">
-                    {t('generate.reschedulable', { count: unlockedScheduled.length })}
-                  </p>
-                  {unlockedScheduled.map((s) => (
-                    <SectionRow
-                      key={s.id}
-                      section={s}
-                      checked={include[s.id] ?? false}
-                      onToggle={(v) => setInclude({ ...include, [s.id]: v })}
-                    />
-                  ))}
-                </div>
-              )}
-            </>
+                )}
+                {data.classes.map((c) => {
+                  const cls = lessons.filter((l) => l.classId === c.id)
+                  const unscheduled = cls.filter((l) => l.meetings.length === 0).length
+                  const placedCount = cls.length - unscheduled
+                  return (
+                    <label key={c.id} className="flex items-center gap-2 py-1.5 text-sm cursor-pointer">
+                      <Checkbox
+                        checked={includeClasses[c.id] ?? false}
+                        onCheckedChange={(v) => setIncludeClasses({ ...includeClasses, [c.id]: v === true })}
+                        aria-label={c.name}
+                      />
+                      <span className="font-medium whitespace-nowrap">{c.name}</span>
+                      <span className="text-muted-foreground truncate flex-1 text-xs">
+                        {t('generate.classes.classCounts', { unscheduled, scheduled: placedCount })}
+                      </span>
+                    </label>
+                  )
+                })}
+              </div>
+            )
+          ) : scheduled.length === 0 ? (
+            <div className="px-4 py-3">
+              <EmptyState title={t('generate.teachers.notReady')} hint="" />
+            </div>
           ) : (
             <div className="px-4 py-3">
-              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1">
-                {t('generate.week.fixed', { count: weekPairs.filter((p) => !p.occ.cancelled).length })}
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">
+                {t('generate.teachers.unassigned', { count: unassignedLessons.length })}
               </p>
-              {weekSelectable.map((s) => (
-                <SectionRow
-                  key={s.id}
-                  section={s}
-                  locked={s.locked}
-                  checked={s.locked ? true : include[s.id] ?? false}
-                  onToggle={(v) => setInclude({ ...include, [s.id]: v })}
-                />
+              {lockedAssignments.length > 0 && (
+                <p className="text-xs font-semibold text-amber-600 uppercase tracking-wide mb-2">
+                  {t('generate.teachers.locked', { count: lockedAssignments.length })}
+                </p>
+              )}
+              {unassignedLessons.length === 0 && (
+                <p className="text-sm text-muted-foreground">{t('generate.teachers.noUnassigned')}</p>
+              )}
+              {unassignedLessons.map((l) => (
+                <div key={l.id} className="flex items-center gap-2 py-1 text-sm">
+                  <span className="font-mono font-medium whitespace-nowrap">{lessonCode(l)}</span>
+                  <span className="text-muted-foreground truncate flex-1">{l.subjectTitle}</span>
+                </div>
               ))}
             </div>
           )}
-          {sections.length === 0 && <EmptyState title={t('generate.noSections')} hint={t('generate.noSectionsHint')} />}
         </div>
 
         <div className="px-4 py-3 border-t flex gap-2">
           {phase !== 'running' ? (
-            <Button variant="primary" className="flex-1" onClick={run} disabled={selectedIds.length === 0}>
-              {t('generate.run', { count: selectedIds.length })}
+            <Button
+              variant="primary"
+              className="flex-1"
+              onClick={stage === 'classes' ? runClasses : runTeachers}
+              disabled={stage === 'classes' && selectedClassIds.length === 0}
+            >
+              {t('generate.run', { count: stage === 'classes' ? selectedClassIds.length : unassignedLessons.length })}
             </Button>
           ) : (
             <Button variant="danger" className="flex-1" onClick={cancel}>
@@ -429,9 +377,9 @@ export default function GeneratePage() {
               {t('generate.solving', { nodes: progress.nodes.toLocaleString(), solutions: progress.solutions })}
             </span>
           )}
-          {phase === 'done' && (
+          {phase === 'done' && solutionCount > 0 && (
             <>
-              <span className="text-sm font-medium">{t('generate.options', { count: solutions.length })}</span>
+              <span className="text-sm font-medium">{t('generate.options', { count: solutionCount })}</span>
               <ToggleGroup
                 type="single"
                 variant="outline"
@@ -440,14 +388,14 @@ export default function GeneratePage() {
                   if (v !== '') setSelected(Number(v))
                 }}
               >
-                {solutions.map((s, i) => (
+                {(stage === 'classes' ? classSolutions : teacherSolutions).map((s, i) => (
                   <ToggleGroupItem key={i} value={String(i)}>
                     #{i + 1} · {t('generate.score', { score: Math.round(s.score) })}
                   </ToggleGroupItem>
                 ))}
               </ToggleGroup>
-              <Button variant="primary" className="ml-auto" onClick={apply} disabled={!solution}>
-                {targetWeek === null ? t('generate.apply') : t('generate.applyWeek')}
+              <Button variant="primary" className="ml-auto" onClick={apply} disabled={!activeSolution}>
+                {stage === 'classes' ? t('generate.apply') : t('generate.applyTeachers')}
               </Button>
             </>
           )}
@@ -462,9 +410,9 @@ export default function GeneratePage() {
           </div>
         )}
 
-        {solution && (
+        {activeSolution && 'summary' in activeSolution && (
           <div className="px-5 py-2 text-sm text-muted-foreground flex gap-2 flex-wrap">
-            {solution.summary.map((s, i) => (
+            {activeSolution.summary.map((s, i) => (
               <Badge key={i} tone="slate">
                 {summaryText(s, locale)}
               </Badge>
@@ -488,36 +436,6 @@ export default function GeneratePage() {
           )}
         </div>
       </div>
-    </div>
-  )
-}
-
-function SectionRow({
-  section,
-  checked,
-  onToggle,
-  locked
-}: {
-  section: SectionFull
-  checked?: boolean
-  onToggle?: (v: boolean) => void
-  locked?: boolean
-}) {
-  return (
-    <div className="flex items-center gap-2 py-1 text-sm">
-      <Checkbox
-        checked={locked ? true : checked ?? false}
-        disabled={locked}
-        onCheckedChange={(v) => onToggle?.(v === true)}
-        aria-label={`${section.code}-${section.number}`}
-      />
-      <span className="font-mono font-medium whitespace-nowrap">
-        {section.code}-{section.number}
-      </span>
-      <span className="text-muted-foreground truncate flex-1">{section.title}</span>
-      {section.instructorName && (
-        <span className="text-xs text-muted-foreground truncate max-w-28">{section.instructorName}</span>
-      )}
     </div>
   )
 }

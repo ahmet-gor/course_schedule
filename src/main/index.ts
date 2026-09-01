@@ -15,7 +15,7 @@ function createWindow(): void {
     height: 900,
     minWidth: 1100,
     minHeight: 720,
-    title: 'Course Scheduler',
+    title: 'Class Scheduler',
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false

@@ -3,26 +3,26 @@ import { useApp } from '../store/useApp'
 import { useAsync } from '../components/Layout'
 import TimetableGrid, { type DropCandidate, type DropInfo } from '../components/TimetableGrid'
 import { Badge, Button, EmptyState, Field, Input, Modal, Select, SelectOption, Tabs, TabsList, TabsTrigger, ToggleGroup, ToggleGroupItem } from '../components/ui'
-import { conflictsBySection, occurrenceCtxSections, occurrenceGridMeetings, toGridMeetings, weekConflicts, weekOccurrences } from '../lib/schedule'
-import { computeConflicts, scoreSoft, type CtxSection } from '@shared/constraints'
+import { conflictsByLesson, lessonCode, occurrenceCtxLessons, occurrenceGridMeetings, toGridMeetings, weekConflicts, weekOccurrences } from '../lib/schedule'
+import { computeConflicts, scoreSoft, type CtxLesson } from '@shared/constraints'
 import { toHHMM, fromHHMM } from '@shared/time'
 import { dayDateLabel, isBreakWeek, overrideCountByWeek, weekLabel } from '@shared/weeks'
 import { DAY_LETTERS, DAY_SHORT, useI18n, useT } from '../i18n'
-import type { MeetingOverride, Occurrence, OverrideInput, ScheduleData, SectionFull } from '@shared/types'
+import type { LessonFull, MeetingOverride, Occurrence, OverrideInput, ScheduleData } from '@shared/types'
 
-type ViewMode = 'department' | 'room' | 'instructor'
+type ViewMode = 'school' | 'class' | 'teacher'
 
 export default function TimetablesPage() {
   const currentTermId = useApp((s) => s.currentTermId)
   const toast = useApp((s) => s.toast)
   const t = useT()
   const { locale } = useI18n()
-  const [view, setView] = useState<ViewMode>('department')
-  const [roomId, setRoomId] = useState<number | null>(null)
-  const [instructorId, setInstructorId] = useState<number | null>(null)
+  const [view, setView] = useState<ViewMode>('school')
+  const [classId, setClassId] = useState<number | null>(null)
+  const [teacherId, setTeacherId] = useState<number | null>(null)
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [week, setWeek] = useState<number | null>(null)
-  const [editOcc, setEditOcc] = useState<{ occ: Occurrence; section: SectionFull } | null>(null)
+  const [editOcc, setEditOcc] = useState<{ occ: Occurrence; lesson: LessonFull } | null>(null)
   const [addingExtra, setAddingExtra] = useState(false)
   const { data, reload } = useAsync(() => window.api.schedule.getData(currentTermId!), [currentTermId])
 
@@ -30,21 +30,23 @@ export default function TimetablesPage() {
   const weekIsBreak = term !== undefined && week !== null && isBreakWeek(term, week)
   const overrideCounts = useMemo(() => (data ? overrideCountByWeek(data.overrides) : new Map<number, number>()), [data])
 
-  const scheduled = useMemo(() => (data?.sections ?? []).filter((s) => s.meetings.length > 0), [data])
-  const patternConflicts = useMemo(() => (data ? conflictsBySection(data, locale) : {}), [data, locale])
+  const scheduled = useMemo(() => (data?.lessons ?? []).filter((l) => l.meetings.length > 0), [data])
+  const patternConflicts = useMemo(() => (data ? conflictsByLesson(data, locale) : {}), [data, locale])
 
   const allWeekPairs = useMemo(
     () => (data && week !== null && !weekIsBreak ? weekOccurrences(data, week) : []),
     [data, week, weekIsBreak]
   )
   const weekPairs = useMemo(() => {
-    if (view === 'room' && roomId !== null) return allWeekPairs.filter((p) => p.occ.roomId === roomId)
-    if (view === 'instructor' && instructorId !== null) return allWeekPairs.filter((p) => p.occ.instructorId === instructorId)
+    if (view === 'class' && classId !== null) return allWeekPairs.filter((p) => p.lesson.classId === classId)
+    if (view === 'teacher' && teacherId !== null) {
+      return allWeekPairs.filter((p) => (p.occ.teacherId ?? p.lesson.teacherId) === teacherId)
+    }
     return allWeekPairs
-  }, [allWeekPairs, view, roomId, instructorId])
+  }, [allWeekPairs, view, classId, teacherId])
 
   const weekConflictMap = useMemo(
-    () => (data && allWeekPairs.length >= 0 && week !== null ? weekConflicts(data, allWeekPairs, locale) : {}),
+    () => (data && week !== null ? weekConflicts(data, allWeekPairs, locale) : {}),
     [data, allWeekPairs, week, locale]
   )
   const conflicts = week === null ? patternConflicts : weekConflictMap
@@ -55,34 +57,41 @@ export default function TimetablesPage() {
 
   const visible = useMemo(() => {
     if (!data) return []
-    if (view === 'room' && roomId !== null) return scheduled.filter((s) => s.roomId === roomId)
-    if (view === 'instructor' && instructorId !== null) return scheduled.filter((s) => s.instructorId === instructorId)
+    if (view === 'class' && classId !== null) return scheduled.filter((l) => l.classId === classId)
+    if (view === 'teacher' && teacherId !== null) return scheduled.filter((l) => l.teacherId === teacherId)
     return scheduled
-  }, [data, view, roomId, instructorId, scheduled])
+  }, [data, view, classId, teacherId, scheduled])
 
-  const selected = scheduled.find((s) => s.id === selectedId) ?? null
+  const selected = scheduled.find((l) => l.id === selectedId) ?? null
   const soft = useMemo(
     () =>
       data
         ? week !== null
-          ? scoreSoft(occurrenceCtxSections(data, allWeekPairs), data.settings)
+          ? scoreSoft(occurrenceCtxLessons(data, allWeekPairs), data.settings)
           : scoreSoft(
-              data.sections
-                .filter((s) => s.meetings.length > 0)
-                .map((s) => ({
-                  id: s.id,
-                  courseId: s.courseId,
-                  code: `${s.code}-${s.number}`,
-                  capacity: s.capacity,
-                  meetings: s.meetings,
-                  room: s.roomId !== null ? data.rooms.find((r) => r.id === s.roomId) ?? null : null,
-                  instructor:
-                    s.instructorId !== null ? data.instructors.find((i) => i.id === s.instructorId) ?? null : null
-                })),
+              scheduled.map((l) => {
+                const tc = l.teacherId !== null ? data.teachers.find((x) => x.id === l.teacherId) : undefined
+                return {
+                  id: l.id,
+                  classId: l.classId,
+                  subjectId: l.subjectId,
+                  code: lessonCode(l),
+                  meetings: l.meetings,
+                  teacher: tc
+                    ? {
+                        id: tc.id,
+                        name: tc.name,
+                        maxWeeklyHours: tc.maxWeeklyHours,
+                        unavailable: tc.unavailable,
+                        subjectIds: tc.subjectIds
+                      }
+                    : null
+                }
+              }),
               data.settings
             )
         : null,
-    [data, week, allWeekPairs]
+    [data, week, allWeekPairs, scheduled]
   )
 
   const validateDrop = useCallback(
@@ -90,26 +99,30 @@ export default function TimetablesPage() {
       if (!data || week === null) return true
       const pair = allWeekPairs.find((p) => p.occ.key === cand.occKey)
       if (!pair) return true
-      const others = occurrenceCtxSections(
+      const others = occurrenceCtxLessons(
         data,
         allWeekPairs.filter((p) => p.occ.key !== cand.occKey && !p.occ.cancelled)
       )
-      const room = pair.occ.roomId !== null ? data.rooms.find((r) => r.id === pair.occ.roomId) : undefined
-      const ins =
-        pair.occ.instructorId !== null ? data.instructors.find((i) => i.id === pair.occ.instructorId) : undefined
-      const candidate: CtxSection = {
+      const tc =
+        pair.occ.teacherId !== null ? data.teachers.find((x) => x.id === pair.occ.teacherId) : undefined
+      const candidate: CtxLesson = {
         id: -999,
-        courseId: pair.section.courseId,
-        code: `${pair.section.code}-${pair.section.number}`,
-        capacity: pair.section.capacity,
+        classId: pair.lesson.classId,
+        subjectId: pair.lesson.subjectId,
+        code: lessonCode(pair.lesson),
         meetings: [{ days: [cand.day], start: cand.start, end: cand.end }],
-        room: room ? { id: room.id, name: room.name, capacity: room.capacity, travelGroup: room.travelGroup } : null,
-        instructor: ins
-          ? { id: ins.id, name: ins.name, maxWeeklyHours: ins.maxWeeklyHours, unavailable: ins.unavailable }
+        teacher: tc
+          ? {
+              id: tc.id,
+              name: tc.name,
+              maxWeeklyHours: tc.maxWeeklyHours,
+              unavailable: tc.unavailable,
+              subjectIds: tc.subjectIds
+            }
           : null
       }
       return !computeConflicts([candidate, ...others], data.settings).some(
-        (c) => c.sectionId === -999 || (c.withSectionIds?.includes(-999) ?? false)
+        (c) => c.lessonId === -999 || (c.withLessonIds?.includes(-999) ?? false)
       )
     },
     [data, week, allWeekPairs]
@@ -117,10 +130,10 @@ export default function TimetablesPage() {
 
   if (!data || !term) return <div className="p-6 text-muted-foreground">{t('common.loading')}</div>
 
-  const fallbacks = { room: t('sections.unassigned'), instructor: t('sections.any') }
+  const fallbackTeacher = '—'
   const letters = DAY_LETTERS[locale]
 
-  const handleSelect = (sectionId: number, occKey?: string) => {
+  const handleSelect = (lessonId: number, occKey?: string) => {
     if (week !== null && occKey) {
       const pair = allWeekPairs.find((p) => p.occ.key === occKey)
       if (pair) {
@@ -128,7 +141,7 @@ export default function TimetablesPage() {
         return
       }
     }
-    setSelectedId(sectionId)
+    setSelectedId(lessonId)
   }
 
   const handleDrop = async (drop: DropInfo) => {
@@ -139,15 +152,14 @@ export default function TimetablesPage() {
     try {
       if (pair.occ.source.type === 'pattern') {
         const input: OverrideInput = {
-          sectionId: pair.section.id,
+          lessonId: pair.lesson.id,
           week,
           kind: 'move',
           fromDay: pair.occ.day,
           toDay: drop.day,
           start: drop.start,
           end: drop.start + duration,
-          roomId: pair.occ.roomId,
-          instructorId: pair.occ.instructorId,
+          teacherId: pair.occ.teacherId,
           note: ''
         }
         await window.api.overrides.create(input)
@@ -184,33 +196,33 @@ export default function TimetablesPage() {
       <div className="px-5 py-3 bg-card border-b flex items-center gap-3 flex-wrap">
         <Tabs value={view} onValueChange={(v) => setView(v as ViewMode)}>
           <TabsList>
-            <TabsTrigger value="department">{t('timetable.department')}</TabsTrigger>
-            <TabsTrigger value="room">{t('timetable.byRoom')}</TabsTrigger>
-            <TabsTrigger value="instructor">{t('timetable.byInstructor')}</TabsTrigger>
+            <TabsTrigger value="school">{t('timetable.school')}</TabsTrigger>
+            <TabsTrigger value="class">{t('timetable.byClass')}</TabsTrigger>
+            <TabsTrigger value="teacher">{t('timetable.byTeacher')}</TabsTrigger>
           </TabsList>
         </Tabs>
-        {view === 'room' && (
+        {view === 'class' && (
           <Select
-            value={roomId === null ? 'all' : String(roomId)}
-            onChange={(v) => setRoomId(v === 'all' ? null : Number(v))}
+            value={classId === null ? 'all' : String(classId)}
+            onChange={(v) => setClassId(v === 'all' ? null : Number(v))}
           >
-            <SelectOption value="all">{t('timetable.selectRoom')}</SelectOption>
-            {data.rooms.map((r) => (
-              <SelectOption key={r.id} value={String(r.id)}>
-                {t('timetable.roomOption', { name: r.name, building: r.building, capacity: r.capacity })}
+            <SelectOption value="all">{t('timetable.selectClass')}</SelectOption>
+            {data.classes.map((c) => (
+              <SelectOption key={c.id} value={String(c.id)}>
+                {c.name}
               </SelectOption>
             ))}
           </Select>
         )}
-        {view === 'instructor' && (
+        {view === 'teacher' && (
           <Select
-            value={instructorId === null ? 'all' : String(instructorId)}
-            onChange={(v) => setInstructorId(v === 'all' ? null : Number(v))}
+            value={teacherId === null ? 'all' : String(teacherId)}
+            onChange={(v) => setTeacherId(v === 'all' ? null : Number(v))}
           >
-            <SelectOption value="all">{t('timetable.selectInstructor')}</SelectOption>
-            {data.instructors.map((i) => (
-              <SelectOption key={i.id} value={String(i.id)}>
-                {i.name}
+            <SelectOption value="all">{t('timetable.selectTeacher')}</SelectOption>
+            {data.teachers.map((tc) => (
+              <SelectOption key={tc.id} value={String(tc.id)}>
+                {tc.name}
               </SelectOption>
             ))}
           </Select>
@@ -286,10 +298,10 @@ export default function TimetablesPage() {
           <EmptyState title={t('timetable.week.break')} hint={t('timetable.week.breakNotice')} />
         ) : week !== null ? (
           <TimetableGrid
-            meetings={occurrenceGridMeetings(data, weekPairs, fallbacks)}
+            meetings={occurrenceGridMeetings(data, weekPairs, fallbackTeacher)}
             dayStart={data.settings.dayStart}
             dayEnd={data.settings.dayEnd}
-            conflictsBySection={conflicts}
+            conflictsByLesson={conflicts}
             selectedId={selectedId}
             onSelect={handleSelect}
             daySublabels={sublabels}
@@ -302,10 +314,10 @@ export default function TimetablesPage() {
           <EmptyState title={t('timetable.emptyTitle')} hint={t('timetable.emptyHint')} />
         ) : (
           <TimetableGrid
-            meetings={toGridMeetings(visible, fallbacks)}
+            meetings={toGridMeetings(visible, fallbackTeacher)}
             dayStart={data.settings.dayStart}
             dayEnd={data.settings.dayEnd}
-            conflictsBySection={conflicts}
+            conflictsByLesson={conflicts}
             selectedId={selectedId}
             onSelect={handleSelect}
           />
@@ -317,17 +329,15 @@ export default function TimetablesPage() {
           {selected && (
             <div className="mb-2 pb-2 border-b">
               <div className="flex items-center gap-2">
-                <span className="font-semibold">
-                  {selected.code}-{selected.number}
-                </span>
-                <span className="text-muted-foreground">{selected.title}</span>
+                <span className="font-semibold">{lessonCode(selected)}</span>
+                <span className="text-muted-foreground">{selected.subjectTitle}</span>
                 {selected.locked && <Badge tone="amber">{t('timetable.locked')}</Badge>}
               </div>
               <div className="text-xs text-muted-foreground mt-0.5">
                 {selected.meetings
                   .map((m) => `${m.days.map((d) => letters[d]).join('')} ${toHHMM(m.start)}–${toHHMM(m.end)}`)
                   .join(' · ') || t('timetable.noMeetings')}{' '}
-                · {selected.instructorName ?? fallbacks.instructor} · {selected.roomName ?? fallbacks.room}
+                · {selected.teacherName ?? fallbackTeacher}
               </div>
               {(conflicts[selected.id] ?? []).map((c) => (
                 <div key={c} className="text-xs text-destructive mt-1">
@@ -385,14 +395,11 @@ function OccurrenceFormFields({
   setStart,
   end,
   setEnd,
-  roomId,
-  setRoomId,
-  instructorId,
-  setInstructorId,
+  teacherId,
+  setTeacherId,
   note,
   setNote,
-  inheritRoomId,
-  inheritInstructorId
+  inheritTeacherId
 }: {
   data: ScheduleData
   day: number
@@ -401,14 +408,11 @@ function OccurrenceFormFields({
   setStart: (s: string) => void
   end: string
   setEnd: (s: string) => void
-  roomId: string
-  setRoomId: (v: string) => void
-  instructorId: string
-  setInstructorId: (v: string) => void
+  teacherId: string
+  setTeacherId: (v: string) => void
   note: string
   setNote: (v: string) => void
-  inheritRoomId: number | null
-  inheritInstructorId: number | null
+  inheritTeacherId: number | null
 }) {
   const t = useT()
   const { locale } = useI18n()
@@ -440,24 +444,14 @@ function OccurrenceFormFields({
           <Input type="time" step={300} value={end} onChange={(e) => setEnd(e.target.value)} />
         </Field>
       </div>
-      <Field label={t('sections.room')}>
-        <Select value={roomId} onChange={setRoomId}>
-          <SelectOption value="">{inheritRoomId !== null ? data.rooms.find((r) => r.id === inheritRoomId)?.name ?? '—' : '—'}</SelectOption>
-          {data.rooms.map((r) => (
-            <SelectOption key={r.id} value={String(r.id)}>
-              {r.name} ({r.capacity})
-            </SelectOption>
-          ))}
-        </Select>
-      </Field>
-      <Field label={t('sections.instructor')}>
-        <Select value={instructorId} onChange={setInstructorId}>
+      <Field label={t('teachers.col.name')}>
+        <Select value={teacherId} onChange={setTeacherId}>
           <SelectOption value="">
-            {inheritInstructorId !== null ? data.instructors.find((i) => i.id === inheritInstructorId)?.name ?? '—' : '—'}
+            {inheritTeacherId !== null ? data.teachers.find((tc) => tc.id === inheritTeacherId)?.name ?? '—' : '—'}
           </SelectOption>
-          {data.instructors.map((i) => (
-            <SelectOption key={i.id} value={String(i.id)}>
-              {i.name}
+          {data.teachers.map((tc) => (
+            <SelectOption key={tc.id} value={String(tc.id)}>
+              {tc.name}
             </SelectOption>
           ))}
         </Select>
@@ -478,20 +472,19 @@ function OccurrenceEditor({
 }: {
   data: ScheduleData
   week: number
-  pair: { occ: Occurrence; section: SectionFull }
+  pair: { occ: Occurrence; lesson: LessonFull }
   onClose: () => void
   onSaved: (message?: string) => void
 }) {
   const t = useT()
-  const { occ, section } = pair
+  const { occ, lesson } = pair
   const sourceOverrideId = occ.source.type === 'override' ? occ.source.overrideId : null
   const override = sourceOverrideId !== null ? data.overrides.find((o) => o.id === sourceOverrideId) ?? null : null
   const [day, setDay] = useState<number>(occ.day)
   const [start, setStart] = useState(toHHMM(occ.start))
   const [end, setEnd] = useState(toHHMM(occ.end))
-  const [roomId, setRoomId] = useState(override?.roomId !== null && override?.roomId !== undefined ? String(override.roomId) : '')
-  const [instructorId, setInstructorId] = useState(
-    override?.instructorId !== null && override?.instructorId !== undefined ? String(override.instructorId) : ''
+  const [teacherId, setTeacherId] = useState(
+    override?.teacherId !== null && override?.teacherId !== undefined ? String(override.teacherId) : ''
   )
   const [note, setNote] = useState(override?.note ?? '')
 
@@ -503,8 +496,7 @@ function OccurrenceEditor({
     toDay: day,
     start: parsedStart,
     end: parsedEnd,
-    roomId: roomId ? Number(roomId) : null,
-    instructorId: instructorId ? Number(instructorId) : null,
+    teacherId: teacherId ? Number(teacherId) : null,
     note
   })
 
@@ -514,7 +506,7 @@ function OccurrenceEditor({
       await window.api.overrides.update(override.id, moveValues())
     } else {
       await window.api.overrides.create({
-        sectionId: section.id,
+        lessonId: lesson.id,
         week,
         kind: 'move',
         fromDay: occ.day,
@@ -524,7 +516,7 @@ function OccurrenceEditor({
     onSaved(message)
   }
 
-  const title = `${section.code}-${section.number} · ${t('timetable.occ.editTitle')}`
+  const title = `${lessonCode(lesson)} · ${t('timetable.occ.editTitle')}`
 
   return (
     <Modal title={title} onClose={onClose}>
@@ -556,14 +548,11 @@ function OccurrenceEditor({
             setStart={setStart}
             end={end}
             setEnd={setEnd}
-            roomId={roomId}
-            setRoomId={setRoomId}
-            instructorId={instructorId}
-            setInstructorId={setInstructorId}
+            teacherId={teacherId}
+            setTeacherId={setTeacherId}
             note={note}
             setNote={setNote}
-            inheritRoomId={section.roomId}
-            inheritInstructorId={section.instructorId}
+            inheritTeacherId={lesson.teacherId}
           />
           <div className="flex justify-between gap-2 pt-4">
             <div>
@@ -583,15 +572,14 @@ function OccurrenceEditor({
                   variant="danger"
                   onClick={async () => {
                     await window.api.overrides.create({
-                      sectionId: section.id,
+                      lessonId: lesson.id,
                       week,
                       kind: 'cancel',
                       fromDay: occ.day,
                       toDay: null,
                       start: null,
                       end: null,
-                      roomId: null,
-                      instructorId: null,
+                      teacherId: null,
                       note: ''
                     })
                     onSaved(t('toast.overrideSaved'))
@@ -626,32 +614,30 @@ function ExtraSessionDialog({
   onSaved: () => void
 }) {
   const t = useT()
-  const candidates = data.sections.filter((s) => s.meetings.length > 0)
-  const [sectionId, setSectionId] = useState<string>(candidates[0] ? String(candidates[0].id) : '')
+  const candidates = data.lessons.filter((l) => l.meetings.length > 0)
+  const [lessonId, setLessonId] = useState<string>(candidates[0] ? String(candidates[0].id) : '')
   const [day, setDay] = useState(1)
-  const [start, setStart] = useState('17:00')
-  const [end, setEnd] = useState('18:15')
-  const [roomId, setRoomId] = useState('')
-  const [instructorId, setInstructorId] = useState('')
+  const [start, setStart] = useState('15:00')
+  const [end, setEnd] = useState('15:40')
+  const [teacherId, setTeacherId] = useState('')
   const [note, setNote] = useState('')
 
-  const section = candidates.find((s) => s.id === Number(sectionId))
+  const lesson = candidates.find((l) => l.id === Number(lessonId))
   const parsedStart = fromHHMM(start) ?? -1
   const parsedEnd = fromHHMM(end) ?? -1
-  const valid = !!section && parsedStart >= 0 && parsedEnd > parsedStart
+  const valid = !!lesson && parsedStart >= 0 && parsedEnd > parsedStart
 
   const save = async () => {
-    if (!valid || !section) return
+    if (!valid || !lesson) return
     await window.api.overrides.create({
-      sectionId: section.id,
+      lessonId: lesson.id,
       week,
       kind: 'extra',
       fromDay: null,
       toDay: day,
       start: parsedStart,
       end: parsedEnd,
-      roomId: roomId ? Number(roomId) : null,
-      instructorId: instructorId ? Number(instructorId) : null,
+      teacherId: teacherId ? Number(teacherId) : null,
       note
     })
     onSaved()
@@ -660,11 +646,11 @@ function ExtraSessionDialog({
   return (
     <Modal title={t('timetable.occ.addTitle')} onClose={onClose}>
       <div className="flex flex-col gap-3">
-        <Field label={t('sections.course')}>
-          <Select value={sectionId} onChange={setSectionId}>
-            {candidates.map((s) => (
-              <SelectOption key={s.id} value={String(s.id)}>
-                {s.code}-{s.number} · {s.title}
+        <Field label={t('classes.col.subject')}>
+          <Select value={lessonId} onChange={setLessonId}>
+            {candidates.map((l) => (
+              <SelectOption key={l.id} value={String(l.id)}>
+                {lessonCode(l)} · {l.subjectTitle}
               </SelectOption>
             ))}
           </Select>
@@ -677,14 +663,11 @@ function ExtraSessionDialog({
           setStart={setStart}
           end={end}
           setEnd={setEnd}
-          roomId={roomId}
-          setRoomId={setRoomId}
-          instructorId={instructorId}
-          setInstructorId={setInstructorId}
+          teacherId={teacherId}
+          setTeacherId={setTeacherId}
           note={note}
           setNote={setNote}
-          inheritRoomId={section?.roomId ?? null}
-          inheritInstructorId={section?.instructorId ?? null}
+          inheritTeacherId={lesson?.teacherId ?? null}
         />
         <div className="flex justify-end gap-2 pt-2">
           <Button onClick={onClose}>{t('common.cancel')}</Button>

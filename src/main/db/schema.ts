@@ -9,61 +9,64 @@ export const terms = sqliteTable('terms', {
   breakWeeks: text('break_weeks').notNull().default('[]')
 })
 
-export const courses = sqliteTable('courses', {
+export const classes = sqliteTable('classes', {
   id: integer('id').primaryKey({ autoIncrement: true }),
-  termId: integer('term_id').notNull(),
-  code: text('code').notNull(),
-  title: text('title').notNull(),
-  credits: real('credits').notNull()
+  termId: integer('term_id')
+    .notNull()
+    .references(() => terms.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  grade: text('grade').notNull().default(''),
+  capacity: integer('capacity').notNull().default(0),
+  homeroom: text('homeroom').notNull().default('')
 })
 
-export const instructors = sqliteTable('instructors', {
+export const subjects = sqliteTable('subjects', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  termId: integer('term_id')
+    .notNull()
+    .references(() => terms.id, { onDelete: 'cascade' }),
+  code: text('code').notNull(),
+  title: text('title').notNull()
+})
+
+export const teachers = sqliteTable('teachers', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   name: text('name').notNull(),
   email: text('email').notNull().default(''),
   maxWeeklyHours: real('max_weekly_hours').notNull().default(12),
-  unavailable: text('unavailable').notNull().default('[]')
+  unavailable: text('unavailable').notNull().default('[]'),
+  subjectIds: text('subject_ids').notNull().default('[]')
 })
 
-export const rooms = sqliteTable('rooms', {
+export const lessons = sqliteTable('lessons', {
   id: integer('id').primaryKey({ autoIncrement: true }),
-  name: text('name').notNull(),
-  building: text('building').notNull().default(''),
-  capacity: integer('capacity').notNull().default(0),
-  travelGroup: text('travel_group').notNull().default('A')
-})
-
-export const sections = sqliteTable('sections', {
-  id: integer('id').primaryKey({ autoIncrement: true }),
-  courseId: integer('course_id').notNull(),
-  number: text('number').notNull(),
-  capacity: integer('capacity').notNull().default(0),
+  classId: integer('class_id')
+    .notNull()
+    .references(() => classes.id, { onDelete: 'cascade' }),
+  subjectId: integer('subject_id')
+    .notNull()
+    .references(() => subjects.id, { onDelete: 'cascade' }),
   sessionsPerWeek: integer('sessions_per_week').notNull().default(2),
-  durationMinutes: integer('duration_minutes').notNull().default(75),
-  instructorId: integer('instructor_id'),
-  roomId: integer('room_id'),
-  locked: integer('locked').notNull().default(0)
-})
-
-export const meetingTimes = sqliteTable('meeting_times', {
-  id: integer('id').primaryKey({ autoIncrement: true }),
-  sectionId: integer('section_id').notNull(),
-  days: text('days').notNull(),
-  startMinute: integer('start_minute').notNull(),
-  endMinute: integer('end_minute').notNull()
+  durationMinutes: integer('duration_minutes').notNull().default(40),
+  teacherId: integer('teacher_id').references(() => teachers.id, { onDelete: 'set null' }),
+  locked: integer('locked').notNull().default(0),
+  days: text('days').notNull().default(''),
+  startMinute: integer('start_minute'),
+  endMinute: integer('end_minute')
 })
 
 export const meetingOverrides = sqliteTable('meeting_overrides', {
   id: integer('id').primaryKey({ autoIncrement: true }),
-  sectionId: integer('section_id').notNull(),
+  lessonId: integer('lesson_id')
+    .notNull()
+    .references(() => lessons.id, { onDelete: 'cascade' }),
   week: integer('week').notNull(),
   kind: text('kind').notNull(),
   fromDay: integer('from_day'),
   toDay: integer('to_day'),
   startMinute: integer('start_minute'),
   endMinute: integer('end_minute'),
-  roomId: integer('room_id'),
-  instructorId: integer('instructor_id'),
+  teacherId: integer('teacher_id').references(() => teachers.id, { onDelete: 'set null' }),
   note: text('note').notNull().default('')
 })
 

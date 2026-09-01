@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useApp } from '../store/useApp'
 import { useAsync } from '../components/Layout'
 import { fromHHMM, toHHMM } from '@shared/time'
@@ -17,26 +17,18 @@ export default function SettingsPage() {
   const { choice: themeChoice, setChoice: setThemeChoice } = useTheme()
   const licenseInfo = useLicensing((s) => s.info)
   const { data: settings, reload: reloadSettings } = useAsync(() => window.api.settings.get(), [])
-  const { data: rooms } = useAsync(() => window.api.rooms.list(), [])
   const [draft, setDraft] = useState<Settings | null>(null)
   const [newTerm, setNewTerm] = useState('')
   const [confirmingTerm, setConfirmingTerm] = useState<Term | null>(null)
   const [editingTerm, setEditingTerm] = useState<Term | null>(null)
   const [excelScope, setExcelScope] = useState<ExcelScope>('pattern')
   const [excelWeek, setExcelWeek] = useState<number>(1)
-  const [csvEntity, setCsvEntity] = useState<CsvEntity>('courses')
+  const [csvEntity, setCsvEntity] = useState<CsvEntity>('subjects')
   const csvFileRef = useRef<HTMLInputElement | null>(null)
 
   useEffect(() => {
     if (settings && !draft) setDraft(structuredClone(settings))
   }, [settings, draft])
-
-  const travelGroups = useMemo(() => {
-    const set = new Set<string>((rooms ?? []).map((r) => r.travelGroup || 'A'))
-    for (const key of Object.keys(draft?.travelMinutes ?? {})) key.split('|').forEach((g) => set.add(g))
-    set.add('A')
-    return [...set].sort()
-  }, [rooms, draft])
 
   if (!draft) return <div className="p-6 text-muted-foreground">{t('common.loading')}</div>
 
@@ -60,7 +52,7 @@ export default function SettingsPage() {
     try {
       const res: ImportCounts = await window.api.io.importCsv(csvEntity, text, currentTermId!)
       const summary = t('toast.csvImport', {
-        entity: t(`entity.${csvEntity}` as 'entity.courses'),
+        entity: t(`entity.${csvEntity}` as 'entity.subjects'),
         added: res.imported,
         updated: res.updated
       })
@@ -116,34 +108,6 @@ export default function SettingsPage() {
           <Field label={t('settings.prefEnd')} hint={t('settings.prefHint')}>
             <Input type="time" step={300} value={toHHMM(draft.preferredEnd)} onChange={(e) => set({ preferredEnd: timeSet(e.target.value, 1080) })} />
           </Field>
-          <Field label={t('settings.b2bGap')} hint={t('settings.b2bHint')}>
-            <Input type="number" min="0" max="60" step="5" value={draft.backToBackGapMin} onChange={(e) => set({ backToBackGapMin: parseInt(e.target.value, 10) || 0 })} />
-          </Field>
-        </div>
-      </section>
-
-      <section className="bg-card rounded-lg border p-5">
-        <h2 className="font-semibold mb-1">{t('settings.travelTitle')}</h2>
-        <p className="text-xs text-muted-foreground mb-3">{t('settings.travelDesc')}</p>
-        {travelGroups.length < 2 && <p className="text-sm text-muted-foreground">{t('settings.travelNeedGroups')}</p>}
-        <div className="flex flex-wrap gap-4">
-          {travelGroups.flatMap((g1, i) =>
-            travelGroups.slice(i + 1).map((g2) => {
-              const key = [g1, g2].sort().join('|')
-              return (
-                <Field key={key} label={t('settings.travelPair', { a: g1, b: g2 })}>
-                  <Input
-                    type="number"
-                    min="0"
-                    max="60"
-                    className="w-20"
-                    value={draft.travelMinutes[key] ?? 0}
-                    onChange={(e) => set({ travelMinutes: { ...draft.travelMinutes, [key]: parseInt(e.target.value, 10) || 0 } })}
-                  />
-                </Field>
-              )
-            })
-          )}
         </div>
       </section>
 
@@ -153,11 +117,14 @@ export default function SettingsPage() {
           <Field label={t('settings.wWindow')} hint={t('settings.wWindowHint')}>
             <Input type="number" min="0" value={draft.weights.window} onChange={(e) => set({ weights: { ...draft.weights, window: parseFloat(e.target.value) || 0 } })} />
           </Field>
-          <Field label={t('settings.wB2b')} hint={t('settings.wB2bHint')}>
-            <Input type="number" min="0" value={draft.weights.backToBack} onChange={(e) => set({ weights: { ...draft.weights, backToBack: parseFloat(e.target.value) || 0 } })} />
+          <Field label={t('settings.wLoad')} hint={t('settings.wLoadHint')}>
+            <Input type="number" min="0" value={draft.weights.load} onChange={(e) => set({ weights: { ...draft.weights, load: parseFloat(e.target.value) || 0 } })} />
           </Field>
-          <Field label={t('settings.wHours')} hint={t('settings.wHoursHint')}>
-            <Input type="number" min="0" value={draft.weights.maxHours} onChange={(e) => set({ weights: { ...draft.weights, maxHours: parseFloat(e.target.value) || 0 } })} />
+          <Field label={t('settings.wOverHours')} hint={t('settings.wOverHoursHint')}>
+            <Input type="number" min="0" value={draft.weights.overHours} onChange={(e) => set({ weights: { ...draft.weights, overHours: parseFloat(e.target.value) || 0 } })} />
+          </Field>
+          <Field label={t('settings.wStability')} hint={t('settings.wStabilityHint')}>
+            <Input type="number" min="0" value={draft.weights.stability} onChange={(e) => set({ weights: { ...draft.weights, stability: parseFloat(e.target.value) || 0 } })} />
           </Field>
           <Field label={t('settings.topN')}>
             <Input type="number" min="1" max="20" value={draft.solver.topN} onChange={(e) => set({ solver: { ...draft.solver, topN: parseInt(e.target.value, 10) || 5 } })} />
@@ -298,7 +265,7 @@ export default function SettingsPage() {
             </Select>
           </Field>
           {excelScope === 'week' && currentTerm && (
-            <Field label={t('generate.week.pick')}>
+            <Field label=              {t('settings.excelWeek')}>
               <Select className="w-48" value={String(excelWeek)} onChange={(v) => setExcelWeek(Number(v))}>
                 {Array.from({ length: currentTerm.weeks }, (_, i) => i + 1).map((w) => (
                   <SelectOption key={w} value={String(w)}>
@@ -313,7 +280,7 @@ export default function SettingsPage() {
           >
             {t('settings.exportJson')}
           </Button>
-          {(['courses', 'instructors', 'rooms', 'sections'] as CsvEntity[]).map((entity) => (
+          {(['subjects', 'teachers', 'classes', 'lessons'] as CsvEntity[]).map((entity) => (
             <Button
               key={entity}
               onClick={() =>
@@ -322,7 +289,7 @@ export default function SettingsPage() {
                 )
               }
             >
-              {t('settings.exportCsv', { entity: t(`entity.${entity}` as 'entity.courses') })}
+              {t('settings.exportCsv', { entity: t(`entity.${entity}` as 'entity.subjects') })}
             </Button>
           ))}
         </div>
@@ -335,7 +302,7 @@ export default function SettingsPage() {
               if (res) {
                 await loadTerms()
                 toast(
-                  t('toast.importedJson', { name: res.termName, courses: res.courses, sections: res.sections }),
+                  t('toast.importedJson', { name: res.termName, classes: res.classes, lessons: res.lessons }),
                   'success'
                 )
               }
@@ -344,11 +311,11 @@ export default function SettingsPage() {
             {t('settings.importJson')}
           </Button>
           <Select value={csvEntity} onChange={(v) => setCsvEntity(v as CsvEntity)}>
-            <SelectOption value="courses">courses: code,title,credits</SelectOption>
-            <SelectOption value="instructors">instructors: name,email,maxWeeklyHours,unavailDays,unavailStart,unavailEnd</SelectOption>
-            <SelectOption value="rooms">rooms: name,building,capacity,travelGroup</SelectOption>
-            <SelectOption value="sections">
-              sections: courseCode,number,capacity,sessionsPerWeek,durationMinutes,instructorEmail,roomName,days,start,end,locked
+            <SelectOption value="subjects">subjects: code,title</SelectOption>
+            <SelectOption value="teachers">teachers: name,email,maxWeeklyHours,subjectCodes,unavailDays,unavailStart,unavailEnd</SelectOption>
+            <SelectOption value="classes">classes: name,grade,capacity,homeroom</SelectOption>
+            <SelectOption value="lessons">
+              lessons: className,subjectCode,sessionsPerWeek,durationMinutes,teacherEmail,days,start,end,locked
             </SelectOption>
           </Select>
           <input

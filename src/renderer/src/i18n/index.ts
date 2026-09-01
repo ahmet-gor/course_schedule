@@ -79,7 +79,7 @@ export function conflictText(c: Conflict, locale: Locale): string {
 
 export function summaryText(s: SolutionSummary, locale: Locale): string {
   if (s.kind === 'window') return translate(locale, 'summary.window', { minutes: s.minutes })
-  if (s.kind === 'backToBack') return translate(locale, 'summary.backToBack', { count: s.count })
-  if (s.kind === 'maxHours') return translate(locale, 'summary.maxHours', { hours: s.hours.toFixed(1) })
+  if (s.kind === 'load') return translate(locale, 'summary.load', { hours: s.hours.toFixed(1) })
+  if (s.kind === 'changes') return translate(locale, 'summary.changes', { count: s.count })
   return translate(locale, 'summary.clean')
 }
