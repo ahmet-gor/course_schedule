@@ -1,0 +1,17 @@
+appId: edu.department.coursescheduler
+productName: Course Scheduler
+files:
+  - out/**
+  - package.json
+extraResources:
+  - from: licensing.config.json
+    to: licensing.config.json
+afterPack: ./scripts/afterPack.cjs
+asarUnpack:
+  - '**/node_modules/better-sqlite3/**'
+win:
+  target: nsis
+  executableName: course-scheduler
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true

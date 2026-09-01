@@ -1,0 +1,9 @@
+{
+  "mode": "off",
+  "apiBase": "https://api.lemonsqueezy.com",
+  "storeUrl": "",
+  "productId": "",
+  "trialDays": 14,
+  "graceDays": 30,
+  "validationIntervalDays": 7
+}
