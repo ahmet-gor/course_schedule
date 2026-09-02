@@ -6,67 +6,76 @@ export interface CtxTeacher {
   name: string
   maxWeeklyHours: number
   unavailable: TimeSlot[]
-  subjectIds: number[]
+  lessonIds: number[]
 }
 
-export interface CtxLesson {
+export interface CtxEntry {
   id: number
-  classId: number
-  subjectId: number
+  departmentIds: number[]
+  lessonIds: number[]
   code: string
   meetings: TimeSlot[]
   teacher: CtxTeacher | null
+  dangling?: boolean
 }
 
-export function computeConflicts(lessons: CtxLesson[], settings: Settings): Conflict[] {
+export function computeConflicts(entries: CtxEntry[], settings: Settings): Conflict[] {
   void settings
   const conflicts: Conflict[] = []
   const flat: {
-    lessonId: number
-    classId: number
-    subjectId: number
+    entryId: number
+    departmentIds: number[]
     code: string
     day: number
     interval: { start: number; end: number }
     teacherId: number | null
   }[] = []
 
-  for (const l of lessons) {
-    if (l.teacher && !l.teacher.subjectIds.includes(l.subjectId)) {
+  for (const e of entries) {
+    if (e.dangling) {
       conflicts.push({
-        lessonId: l.id,
-        type: 'teacher-unqualified',
-        message: `${l.teacher.name} is not qualified to teach ${l.code.split('·').pop() ?? l.code}`,
-        params: { name: l.teacher.name, code: l.code },
+        lessonId: e.id,
+        type: 'entry-dangling',
+        message: `${e.code} references a deleted lesson`,
+        params: { code: e.code },
         withLessonIds: []
       })
     }
-    if (l.teacher) {
-      for (const m of l.meetings) {
+    if (e.teacher) {
+      const missing = e.lessonIds.filter((lid) => !e.teacher!.lessonIds.includes(lid))
+      if (missing.length > 0) {
+        conflicts.push({
+          lessonId: e.id,
+          type: 'teacher-unqualified',
+          message: `${e.teacher.name} is not related to ${e.code.split('·').pop() ?? e.code}`,
+          params: { name: e.teacher.name, code: e.code },
+          withLessonIds: []
+        })
+      }
+      for (const m of e.meetings) {
         for (const d of m.days) {
-          for (const u of l.teacher.unavailable) {
+          for (const u of e.teacher.unavailable) {
             if (u.days.includes(d) && overlap(m, u)) {
               conflicts.push({
-                lessonId: l.id,
+                lessonId: e.id,
                 type: 'teacher-unavailable',
-                message: `${l.code} meets ${daysToLabel([d])} ${toHHMM(m.start)}-${toHHMM(m.end)} during ${l.teacher.name}'s unavailable time`,
-                params: { code: l.code, dayIndex: d, start: toHHMM(m.start), end: toHHMM(m.end), name: l.teacher.name }
+                message: `${e.code} meets ${daysToLabel([d])} ${toHHMM(m.start)}-${toHHMM(m.end)} during ${e.teacher.name}'s unavailable time`,
+                params: { code: e.code, dayIndex: d, start: toHHMM(m.start), end: toHHMM(m.end), name: e.teacher.name }
               })
             }
           }
         }
       }
     }
-    for (const m of l.meetings) {
+    for (const m of e.meetings) {
       for (const d of m.days) {
         flat.push({
-          lessonId: l.id,
-          classId: l.classId,
-          subjectId: l.subjectId,
-          code: l.code,
+          entryId: e.id,
+          departmentIds: e.departmentIds,
+          code: e.code,
           day: d,
           interval: m,
-          teacherId: l.teacher?.id ?? null
+          teacherId: e.teacher?.id ?? null
         })
       }
     }
@@ -77,48 +86,48 @@ export function computeConflicts(lessons: CtxLesson[], settings: Settings): Conf
       const a = flat[i]
       const b = flat[j]
       if (a.day !== b.day || !overlap(a.interval, b.interval)) continue
-      if (a.classId === b.classId) {
+      if (a.departmentIds.some((d) => b.departmentIds.includes(d))) {
         conflicts.push({
-          lessonId: a.lessonId,
-          type: 'class-overlap',
+          lessonId: a.entryId,
+          type: 'dept-overlap',
           message: `Class clash: ${a.code} and ${b.code} overlap`,
           params: { a: a.code, b: b.code },
-          withLessonIds: [b.lessonId]
+          withLessonIds: [b.entryId]
         })
       }
       if (a.teacherId !== null && a.teacherId === b.teacherId) {
         conflicts.push({
-          lessonId: a.lessonId,
+          lessonId: a.entryId,
           type: 'teacher-overlap',
           message: `Teacher teaches ${a.code} and ${b.code} at the same time`,
           params: { a: a.code, b: b.code },
-          withLessonIds: [b.lessonId]
+          withLessonIds: [b.entryId]
         })
       }
     }
   }
 
-  const minutesByTeacher = new Map<number, { name: string; minutes: number; max: number; lessonId: number }>()
-  for (const l of lessons) {
-    if (!l.teacher) continue
-    const cur = minutesByTeacher.get(l.teacher.id) ?? {
-      name: l.teacher.name,
+  const minutesByTeacher = new Map<number, { name: string; minutes: number; max: number; entryId: number }>()
+  for (const e of entries) {
+    if (!e.teacher) continue
+    const cur = minutesByTeacher.get(e.teacher.id) ?? {
+      name: e.teacher.name,
       minutes: 0,
-      max: l.teacher.maxWeeklyHours,
-      lessonId: l.id
+      max: e.teacher.maxWeeklyHours,
+      entryId: e.id
     }
-    for (const m of l.meetings) {
+    for (const m of e.meetings) {
       for (const _d of m.days) {
         cur.minutes += m.end - m.start
       }
     }
-    minutesByTeacher.set(l.teacher.id, cur)
+    minutesByTeacher.set(e.teacher.id, cur)
   }
   for (const [, t] of minutesByTeacher) {
     const excess = t.minutes / 60 - t.max
     if (excess > 0.001) {
       conflicts.push({
-        lessonId: t.lessonId,
+        lessonId: t.entryId,
         type: 'teacher-overhours',
         message: `${t.name} is over the weekly limit by ${excess.toFixed(1)} h`,
         params: { name: t.name, hours: excess.toFixed(1) },
@@ -130,18 +139,18 @@ export function computeConflicts(lessons: CtxLesson[], settings: Settings): Conf
   return conflicts
 }
 
-export function scoreSoft(lessons: CtxLesson[], settings: Settings): SoftScore {
+export function scoreSoft(entries: CtxEntry[], settings: Settings): SoftScore {
   let windowPenalty = 0
   const minutesByTeacher = new Map<number, number>()
 
-  for (const l of lessons) {
-    for (const m of l.meetings) {
+  for (const e of entries) {
+    for (const m of e.meetings) {
       const before = Math.max(0, settings.preferredStart - m.start)
       const after = Math.max(0, m.end - settings.preferredEnd)
       windowPenalty += before + after
-      if (l.teacher) {
+      if (e.teacher) {
         for (const _d of m.days) {
-          minutesByTeacher.set(l.teacher.id, (minutesByTeacher.get(l.teacher.id) ?? 0) + (m.end - m.start))
+          minutesByTeacher.set(e.teacher.id, (minutesByTeacher.get(e.teacher.id) ?? 0) + (m.end - m.start))
         }
       }
     }
@@ -156,11 +165,11 @@ export function scoreSoft(lessons: CtxLesson[], settings: Settings): SoftScore {
 
   let overHours = 0
   const seen = new Set<number>()
-  for (const l of lessons) {
-    if (!l.teacher || seen.has(l.teacher.id)) continue
-    seen.add(l.teacher.id)
-    const minutes = minutesByTeacher.get(l.teacher.id) ?? 0
-    const excess = minutes / 60 - l.teacher.maxWeeklyHours
+  for (const e of entries) {
+    if (!e.teacher || seen.has(e.teacher.id)) continue
+    seen.add(e.teacher.id)
+    const minutes = minutesByTeacher.get(e.teacher.id) ?? 0
+    const excess = minutes / 60 - e.teacher.maxWeeklyHours
     if (excess > 0) overHours += excess
   }
 

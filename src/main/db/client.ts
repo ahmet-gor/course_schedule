@@ -10,8 +10,9 @@ let sqlite: Database.Database | null = null
 export function initDb(path: string): void {
   sqlite = new Database(path)
   sqlite.pragma('journal_mode = WAL')
-  sqlite.pragma('foreign_keys = ON')
+  sqlite.pragma('foreign_keys = OFF')
   runMigrations(sqlite)
+  sqlite.pragma('foreign_keys = ON')
   sqlite
     .prepare('INSERT OR IGNORE INTO settings (id, json) VALUES (1, ?)')
     .run(JSON.stringify(DEFAULT_SETTINGS))

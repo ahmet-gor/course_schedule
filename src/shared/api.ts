@@ -1,28 +1,27 @@
 import type {
-  LessonDTO,
-  LessonFull,
-  MeetingOverride,
-  OverrideInput,
-  SchoolClass,
+  Department,
+  Lesson,
+  LessonRef,
+  Schedule,
   ScheduleData,
   Settings,
-  Subject,
   Teacher,
-  Term,
   TimeSlot
 } from './types'
 import type { LicensingInfo } from './licensing'
 
-export interface ClassInput {
+export interface DepartmentInput {
   name: string
-  grade: string
   capacity: number
   homeroom: string
 }
 
-export interface SubjectInput {
+export interface LessonInput {
+  departmentId: number
   code: string
   title: string
+  sessionsPerWeek: number
+  durationMinutes: number
 }
 
 export interface TeacherInput {
@@ -30,26 +29,19 @@ export interface TeacherInput {
   email: string
   maxWeeklyHours: number
   unavailable: TimeSlot[]
-  subjectIds: number[]
+  lessonIds: number[]
 }
 
-export interface LessonInput {
-  subjectId: number
-  sessionsPerWeek: number
-  durationMinutes: number
+export interface EntryInput {
+  lessonIds: number[]
+  days: number[]
+  start: number | null
+  end: number | null
   teacherId: number | null
-  locked?: boolean
+  locked: boolean
 }
 
-export type CsvEntity = 'subjects' | 'teachers' | 'classes' | 'lessons'
-export type ExcelScope = 'pattern' | 'week' | 'all'
-
-export interface TermPatch {
-  name?: string
-  weeks?: number
-  startDate?: string
-  breakWeeks?: number[]
-}
+export type CsvEntity = 'departments' | 'lessons' | 'teachers'
 
 export interface ImportCounts {
   imported: number
@@ -58,22 +50,16 @@ export interface ImportCounts {
 }
 
 export interface RendererApi {
-  terms: {
-    list(): Promise<Term[]>
-    create(name: string): Promise<Term>
-    update(id: number, patch: TermPatch): Promise<void>
+  departments: {
+    list(): Promise<Department[]>
+    create(data: DepartmentInput): Promise<Department>
+    update(id: number, patch: Partial<DepartmentInput>): Promise<void>
     remove(id: number): Promise<void>
   }
-  classes: {
-    list(termId: number): Promise<SchoolClass[]>
-    create(termId: number, data: ClassInput): Promise<SchoolClass>
-    update(id: number, data: ClassInput): Promise<void>
-    remove(id: number): Promise<void>
-  }
-  subjects: {
-    list(termId: number): Promise<Subject[]>
-    create(termId: number, data: SubjectInput): Promise<Subject>
-    update(id: number, data: SubjectInput): Promise<void>
+  lessons: {
+    list(): Promise<LessonRef[]>
+    create(data: LessonInput): Promise<Lesson>
+    update(id: number, patch: Partial<LessonInput>): Promise<void>
     remove(id: number): Promise<void>
   }
   teachers: {
@@ -82,42 +68,36 @@ export interface RendererApi {
     update(id: number, data: TeacherInput): Promise<void>
     remove(id: number): Promise<void>
   }
-  lessons: {
-    list(termId: number): Promise<LessonFull[]>
-    create(classId: number, data: LessonInput): Promise<LessonDTO>
-    update(
-      id: number,
-      data: Partial<LessonInput> & { teacherId?: number | null; locked?: boolean }
-    ): Promise<void>
-    setSchedule(id: number, days: number[], start: number | null, end: number | null): Promise<void>
+  schedules: {
+    list(): Promise<Schedule[]>
+    create(name: string): Promise<Schedule>
+    rename(id: number, name: string): Promise<void>
     remove(id: number): Promise<void>
+  }
+  entries: {
+    create(scheduleId: number, data: EntryInput): Promise<number>
+    update(id: number, patch: Partial<EntryInput>): Promise<void>
+    remove(id: number): Promise<void>
+  }
+  schedule: {
+    getData(scheduleId: number): Promise<ScheduleData>
+    applyEntries(
+      scheduleId: number,
+      assignments: Record<string, { lessonIds: number[]; days: number[]; start: number; end: number }>
+    ): Promise<void>
+    assignTeachers(scheduleId: number, assignments: Record<string, number | null>): Promise<void>
   }
   settings: {
     get(): Promise<Settings>
     update(patch: Partial<Settings>): Promise<Settings>
   }
-  overrides: {
-    create(data: OverrideInput): Promise<void>
-    update(id: number, patch: Partial<OverrideInput>): Promise<void>
-    remove(id: number): Promise<void>
-    resetWeek(termId: number, week: number, lessonId?: number | null): Promise<void>
-  }
-  schedule: {
-    getData(termId: number): Promise<ScheduleData>
-    applyClasses(
-      termId: number,
-      assignments: Record<string, { days: number[]; start: number; end: number }>
-    ): Promise<number>
-    assignTeachers(termId: number, assignments: Record<string, number | null>): Promise<void>
-    unschedule(lessonIds: number[]): Promise<void>
-  }
   io: {
-    exportJson(termId: number): Promise<string | null>
-    importJson(): Promise<{ termName: string; classes: number; lessons: number } | null>
-    exportExcel(termId: number, scope: ExcelScope, week?: number): Promise<string | null>
-    exportCsv(entity: CsvEntity, termId: number): Promise<string | null>
-    importCsv(entity: CsvEntity, text: string, termId: number): Promise<ImportCounts>
-    seedSample(): Promise<Term>
+    exportJson(): Promise<string | null>
+    importJson(): Promise<{ schedules: number } | null>
+    exportExcel(scheduleId: number): Promise<string | null>
+    exportCsv(entity: CsvEntity): Promise<string | null>
+    importCsv(entity: CsvEntity, text: string): Promise<ImportCounts>
+    seedSample(): Promise<Schedule>
   }
   licensing: {
     getState(): Promise<LicensingInfo>

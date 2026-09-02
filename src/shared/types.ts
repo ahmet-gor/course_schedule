@@ -1,11 +1,3 @@
-export interface Term {
-  id: number
-  name: string
-  weeks: number
-  startDate: string
-  breakWeeks: number[]
-}
-
 export interface TimeSlot {
   days: number[]
   start: number
@@ -14,20 +6,25 @@ export interface TimeSlot {
 
 export type Meeting = TimeSlot
 
-export interface SchoolClass {
+export interface Department {
   id: number
-  termId: number
   name: string
-  grade: string
   capacity: number
   homeroom: string
 }
 
-export interface Subject {
+export interface Lesson {
   id: number
-  termId: number
+  departmentId: number
   code: string
   title: string
+  sessionsPerWeek: number
+  durationMinutes: number
+}
+
+export interface LessonRef extends Lesson {
+  departmentName: string
+  teacherIds: number[]
 }
 
 export interface Teacher {
@@ -36,67 +33,38 @@ export interface Teacher {
   email: string
   maxWeeklyHours: number
   unavailable: TimeSlot[]
-  subjectIds: number[]
+  lessonIds: number[]
 }
 
-export interface LessonDTO {
+export interface Schedule {
   id: number
-  classId: number
-  subjectId: number
-  sessionsPerWeek: number
-  durationMinutes: number
-  teacherId: number | null
-  locked: boolean
-  meetings: Meeting[]
+  name: string
+  createdAt: number
 }
 
-export interface LessonFull extends LessonDTO {
-  className: string
-  subjectCode: string
-  subjectTitle: string
+export interface ScheduleEntry {
+  id: number
+  scheduleId: number
+  locked: boolean
+  teacherId: number | null
+  days: number[]
+  start: number | null
+  end: number | null
+  lessonIds: number[]
+}
+
+export type EntryFull = ScheduleEntry & {
+  lessons: LessonRef[]
   teacherName: string | null
 }
 
-export type OverrideKind = 'move' | 'cancel' | 'extra'
-
-export interface MeetingOverride {
-  id: number
-  lessonId: number
-  week: number
-  kind: OverrideKind
-  fromDay: number | null
-  toDay: number | null
-  start: number | null
-  end: number | null
-  teacherId: number | null
-  note: string
-}
-
-export type OverrideInput = Omit<MeetingOverride, 'id'>
-
-export type OccurrenceSource =
-  | { type: 'pattern' }
-  | { type: 'override'; overrideId: number }
-
-export interface Occurrence {
-  key: string
-  lessonId: number
-  day: number
-  start: number
-  end: number
-  teacherId: number | null
-  source: OccurrenceSource
-  extra: boolean
-  cancelled: boolean
-  cancelOverrideId: number | null
-}
-
 export type ConflictType =
-  | 'class-overlap'
+  | 'dept-overlap'
   | 'teacher-overlap'
   | 'teacher-unavailable'
   | 'teacher-unqualified'
   | 'teacher-overhours'
+  | 'entry-dangling'
 
 export interface Conflict {
   lessonId: number
@@ -126,7 +94,6 @@ export interface Settings {
   preferredStart: number
   preferredEnd: number
   slotStepMin: number
-  defaultWeeks: number
   dayPatterns: number[][]
   weights: SolverWeights
   solver: { topN: number; timeLimitMs: number; maxNodes: number }
@@ -138,7 +105,6 @@ export const DEFAULT_SETTINGS: Settings = {
   preferredStart: 510,
   preferredEnd: 930,
   slotStepMin: 30,
-  defaultWeeks: 18,
   dayPatterns: [
     [1, 3, 5],
     [2, 4],
@@ -161,7 +127,7 @@ export const DEFAULT_SETTINGS: Settings = {
   solver: { topN: 5, timeLimitMs: 8000, maxNodes: 1500000 }
 }
 
-export interface ClassAssignment {
+export interface EntryAssignment {
   days: number[]
   start: number
   end: number
@@ -173,52 +139,48 @@ export type SolutionSummary =
   | { kind: 'changes'; count: number }
   | { kind: 'clean' }
 
-export interface ClassSolution {
+export interface EntrySolution {
   score: number
   window: number
-  assignments: Record<string, ClassAssignment>
+  assignments: Record<string, EntryAssignment>
   summary: SolutionSummary[]
 }
 
-export interface FlexLesson {
+export interface FlexEntry {
   id: number
-  classId: number
-  subjectId: number
+  lessonIds: number[]
+  departmentIds: number[]
   code: string
   sessionsPerWeek: number
   durationMinutes: number
 }
 
-export interface FixLesson {
+export interface FixEntry {
   id: number
-  classId: number
-  subjectId: number
+  departmentIds: number[]
   code: string
   meetings: Meeting[]
 }
 
-export interface ClassSolveInput {
+export interface EntrySolveInput {
   settings: Settings
-  classes: { id: number; name: string }[]
-  flexible: FlexLesson[]
-  fixed: FixLesson[]
+  departments: { id: number; name: string }[]
+  flexible: FlexEntry[]
+  fixed: FixEntry[]
 }
 
-export interface ClassSolveResult {
-  solutions: ClassSolution[]
+export interface EntrySolveResult {
+  solutions: EntrySolution[]
   problems: string[]
   timedOut: boolean
   exhausted: boolean
   nodesSearched: number
 }
 
-export interface PlacedLesson {
+export interface PlacedEntry {
   id: number
-  classId: number
-  subjectId: number
+  lessonIds: number[]
   code: string
-  sessionsPerWeek: number
-  durationMinutes: number
   meetings: Meeting[]
   teacherId: number | null
   fixed: boolean
@@ -227,7 +189,7 @@ export interface PlacedLesson {
 export interface TeacherSolveInput {
   settings: Settings
   teachers: Teacher[]
-  lessons: PlacedLesson[]
+  entries: PlacedEntry[]
 }
 
 export interface TeacherSolution {
@@ -247,10 +209,8 @@ export interface TeacherSolveResult {
 
 export interface ScheduleData {
   settings: Settings
-  term: Term
-  classes: SchoolClass[]
-  subjects: Subject[]
+  departments: Department[]
+  lessons: LessonRef[]
   teachers: Teacher[]
-  lessons: LessonFull[]
-  overrides: MeetingOverride[]
+  entries: EntryFull[]
 }

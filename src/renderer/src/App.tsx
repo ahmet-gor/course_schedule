@@ -1,26 +1,27 @@
 import { useEffect } from 'react'
 import { useApp } from './store/useApp'
-import { Layout, Onboarding } from './components/Layout'
+import { Layout } from './components/Layout'
 import { Toaster } from '@/components/ui/sonner'
 import { LicenseBanner, LicenseDialog } from './components/LicenseUI'
 import { useLicensing } from './store/useLicensing'
 import { useT } from './i18n'
-import TimetablesPage from './pages/TimetablesPage'
-import ClassesPage from './pages/ClassesPage'
-import SubjectsPage from './pages/SubjectsPage'
+import SchedulesPage from './pages/SchedulesPage'
+import DepartmentsPage from './pages/DepartmentsPage'
+import LessonsPage from './pages/LessonsPage'
 import TeachersPage from './pages/TeachersPage'
+import TimetablesPage from './pages/TimetablesPage'
 import GeneratePage from './pages/GeneratePage'
 import SettingsPage from './pages/SettingsPage'
 
 export default function App() {
-  const { ready, terms, loadTerms, page } = useApp()
+  const { ready, loadSchedules, page } = useApp()
   const t = useT()
   const refreshLicensing = useLicensing((s) => s.refresh)
 
   useEffect(() => {
-    void loadTerms()
+    void loadSchedules()
     void refreshLicensing()
-  }, [loadTerms, refreshLicensing])
+  }, [loadSchedules, refreshLicensing])
 
   const shell = (children: React.ReactNode) => (
     <>
@@ -37,16 +38,13 @@ export default function App() {
     )
   }
 
-  if (terms.length === 0) {
-    return shell(<Onboarding />)
-  }
-
   return shell(
     <Layout>
-      {page === 'timetables' && <TimetablesPage />}
-      {page === 'classes' && <ClassesPage />}
-      {page === 'subjects' && <SubjectsPage />}
+      {page === 'schedules' && <SchedulesPage />}
+      {page === 'departments' && <DepartmentsPage />}
+      {page === 'lessons' && <LessonsPage />}
       {page === 'teachers' && <TeachersPage />}
+      {page === 'timetables' && <TimetablesPage />}
       {page === 'generate' && <GeneratePage />}
       {page === 'settings' && <SettingsPage />}
     </Layout>

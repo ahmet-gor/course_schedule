@@ -4,7 +4,7 @@ import { useApp } from '../store/useApp'
 import { Badge, Button, ConfirmDialog, EmptyState, Field, Input, Modal, ToggleGroup, ToggleGroupItem } from '../components/ui'
 import { toHHMM, fromHHMM } from '@shared/time'
 import { DAY_LETTERS, labelDays, useI18n, useT } from '../i18n'
-import type { Subject, Teacher, TimeSlot } from '@shared/types'
+import type { LessonRef, Teacher, TimeSlot } from '@shared/types'
 
 interface SlotDraft {
   days: number[]
@@ -13,19 +13,22 @@ interface SlotDraft {
 }
 
 export default function TeachersPage() {
-  const currentTermId = useApp((s) => s.currentTermId)
   const toast = useApp((s) => s.toast)
   const t = useT()
   const { locale } = useI18n()
   const { data: teachers, reload } = useAsync(() => window.api.teachers.list(), [])
-  const { data: subjects } = useAsync(() => window.api.subjects.list(currentTermId!), [currentTermId])
+  const { data: lessons } = useAsync(() => window.api.lessons.list(), [])
   const [editing, setEditing] = useState<Teacher | null>(null)
   const [creating, setCreating] = useState(false)
   const [confirming, setConfirming] = useState<Teacher | null>(null)
 
   if (!teachers) return <div className="p-6 text-muted-foreground">{t('common.loading')}</div>
 
-  const subjectById = new Map((subjects ?? []).map((s) => [s.id, s]))
+  const lessonById = new Map((lessons ?? []).map((l) => [l.id, l]))
+  const lessonLabel = (id: number) => {
+    const l = lessonById.get(id)
+    return l ? `${l.departmentName}·${l.code}` : `#${id}`
+  }
 
   return (
     <div className="flex flex-col h-full">
@@ -45,7 +48,7 @@ export default function TeachersPage() {
                 <th className="px-4 py-2.5 font-medium">{t('teachers.col.name')}</th>
                 <th className="px-4 py-2.5 font-medium">{t('teachers.col.email')}</th>
                 <th className="px-4 py-2.5 font-medium">{t('teachers.col.maxHours')}</th>
-                <th className="px-4 py-2.5 font-medium">{t('teachers.col.subjects')}</th>
+                <th className="px-4 py-2.5 font-medium">{t('teachers.col.lessons')}</th>
                 <th className="px-4 py-2.5 font-medium">{t('teachers.col.unavailable')}</th>
                 <th className="px-4 py-2.5 font-medium w-44"></th>
               </tr>
@@ -57,12 +60,12 @@ export default function TeachersPage() {
                   <td className="px-4 py-2.5 text-muted-foreground">{tc.email}</td>
                   <td className="px-4 py-2.5">{tc.maxWeeklyHours}</td>
                   <td className="px-4 py-2.5">
-                    {tc.subjectIds.length === 0 ? (
+                    {tc.lessonIds.length === 0 ? (
                       <span className="text-muted-foreground">—</span>
                     ) : (
-                      tc.subjectIds.map((sid) => (
-                        <Badge key={sid} tone="indigo">
-                          {subjectById.get(sid)?.code ?? '?'}
+                      tc.lessonIds.map((lid) => (
+                        <Badge key={lid} tone="indigo">
+                          {lessonLabel(lid)}
                         </Badge>
                       ))
                     )}
@@ -108,10 +111,10 @@ export default function TeachersPage() {
           }}
         />
       )}
-      {(creating || editing) && subjects && (
+      {(creating || editing) && lessons !== null && (
         <TeacherDialog
           teacher={editing}
-          subjects={subjects}
+          lessons={lessons}
           onDone={(message) => {
             setCreating(false)
             setEditing(null)
@@ -126,11 +129,11 @@ export default function TeachersPage() {
 
 function TeacherDialog({
   teacher,
-  subjects,
+  lessons,
   onDone
 }: {
   teacher: Teacher | null
-  subjects: Subject[]
+  lessons: LessonRef[]
   onDone: (message?: string) => void
 }) {
   const t = useT()
@@ -139,7 +142,7 @@ function TeacherDialog({
   const [name, setName] = useState(teacher?.name ?? '')
   const [email, setEmail] = useState(teacher?.email ?? '')
   const [maxHours, setMaxHours] = useState(String(teacher?.maxWeeklyHours ?? 20))
-  const [subjectIds, setSubjectIds] = useState<number[]>(teacher?.subjectIds ?? [])
+  const [lessonIds, setLessonIds] = useState<number[]>(teacher?.lessonIds ?? [])
   const [slots, setSlots] = useState<SlotDraft[]>(
     (teacher?.unavailable ?? []).map((u) => ({ days: [...u.days], start: toHHMM(u.start), end: toHHMM(u.end) }))
   )
@@ -162,7 +165,7 @@ function TeacherDialog({
         email: email.trim(),
         maxWeeklyHours: parseFloat(maxHours) || 20,
         unavailable,
-        subjectIds
+        lessonIds
       }
       if (teacher) await window.api.teachers.update(teacher.id, payload)
       else await window.api.teachers.create(payload)
@@ -172,6 +175,16 @@ function TeacherDialog({
       setBusy(false)
     }
   }
+
+  const grouped = useMemo(() => {
+    const map = new Map<string, LessonRef[]>()
+    for (const l of lessons) {
+      const arr = map.get(l.departmentName) ?? []
+      arr.push(l)
+      map.set(l.departmentName, arr)
+    }
+    return [...map.entries()]
+  }, [lessons])
 
   return (
     <Modal title={teacher ? t('teachers.editTitle', { name: teacher.name }) : t('teachers.newTitle')} onClose={() => onDone()}>
@@ -185,20 +198,30 @@ function TeacherDialog({
         <Field label={t('teachers.maxHours')} hint={t('teachers.maxHoursHint')}>
           <Input type="number" min="1" max="40" step="0.5" value={maxHours} onChange={(e) => setMaxHours(e.target.value)} />
         </Field>
-        <Field label={t('teachers.subjects')} hint={t('teachers.subjectsHint')}>
-          <ToggleGroup
-            type="multiple"
-            variant="outline"
-            value={subjectIds.map(String)}
-            onValueChange={(vals) => setSubjectIds(vals.map(Number))}
-            className="bg-transparent gap-1 flex-wrap justify-start h-auto"
-          >
-            {subjects.map((s) => (
-              <ToggleGroupItem key={s.id} value={String(s.id)} className="h-7 px-2 text-xs font-semibold">
-                {s.code}
-              </ToggleGroupItem>
+        <Field label={t('teachers.lessons')} hint={t('teachers.lessonsHint')}>
+          <div className="flex flex-col gap-2 bg-muted/30 rounded-md p-2 max-h-44 overflow-y-auto">
+            {grouped.length === 0 && (
+              <span className="text-sm text-muted-foreground">{t('lessons.empty')}</span>
+            )}
+            {grouped.map(([deptName, deptLessons]) => (
+              <div key={deptName}>
+                <p className="text-xs font-semibold text-muted-foreground mb-1">{deptName}</p>
+                <ToggleGroup
+                  type="multiple"
+                  variant="outline"
+                  value={lessonIds.map(String)}
+                  onValueChange={(vals) => setLessonIds(vals.map(Number))}
+                  className="bg-transparent gap-1 flex-wrap justify-start h-auto"
+                >
+                  {deptLessons.map((l) => (
+                    <ToggleGroupItem key={l.id} value={String(l.id)} className="h-7 px-2 text-xs font-semibold">
+                      {l.code}
+                    </ToggleGroupItem>
+                  ))}
+                </ToggleGroup>
+              </div>
             ))}
-          </ToggleGroup>
+          </div>
         </Field>
         <div>
           <div className="flex items-center justify-between mb-2">

@@ -1,195 +1,113 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useApp } from '../store/useApp'
 import { useAsync } from '../components/Layout'
 import TimetableGrid, { type DropCandidate, type DropInfo } from '../components/TimetableGrid'
-import { Badge, Button, EmptyState, Field, Input, Modal, Select, SelectOption, Tabs, TabsList, TabsTrigger, ToggleGroup, ToggleGroupItem } from '../components/ui'
-import { conflictsByLesson, lessonCode, occurrenceCtxLessons, occurrenceGridMeetings, toGridMeetings, weekConflicts, weekOccurrences } from '../lib/schedule'
-import { computeConflicts, scoreSoft, type CtxLesson } from '@shared/constraints'
+import { Badge, Button, Checkbox, EmptyState, Field, Input, Modal, Select, SelectOption, Tabs, TabsList, TabsTrigger, ToggleGroup, ToggleGroupItem } from '../components/ui'
+import { computeConflicts, type CtxEntry } from '@shared/constraints'
 import { toHHMM, fromHHMM } from '@shared/time'
-import { dayDateLabel, isBreakWeek, overrideCountByWeek, weekLabel } from '@shared/weeks'
-import { DAY_LETTERS, DAY_SHORT, useI18n, useT } from '../i18n'
-import type { LessonFull, MeetingOverride, Occurrence, OverrideInput, ScheduleData } from '@shared/types'
+import { DAY_LETTERS, useI18n, useT } from '../i18n'
+import { conflictsByEntry, entryCode, softScore, toCtxEntries, toGridMeetings } from '../lib/schedule'
+import type { EntryFull, LessonRef, ScheduleData } from '@shared/types'
 
-type ViewMode = 'school' | 'class' | 'teacher'
+type ViewMode = 'school' | 'department' | 'teacher'
 
 export default function TimetablesPage() {
-  const currentTermId = useApp((s) => s.currentTermId)
+  const currentScheduleId = useApp((s) => s.currentScheduleId)
+  const schedules = useApp((s) => s.schedules)
+  const setPage = useApp((s) => s.setPage)
   const toast = useApp((s) => s.toast)
   const t = useT()
   const { locale } = useI18n()
   const [view, setView] = useState<ViewMode>('school')
-  const [classId, setClassId] = useState<number | null>(null)
+  const [deptId, setDeptId] = useState<number | null>(null)
   const [teacherId, setTeacherId] = useState<number | null>(null)
   const [selectedId, setSelectedId] = useState<number | null>(null)
-  const [week, setWeek] = useState<number | null>(null)
-  const [editOcc, setEditOcc] = useState<{ occ: Occurrence; lesson: LessonFull } | null>(null)
-  const [addingExtra, setAddingExtra] = useState(false)
-  const { data, reload } = useAsync(() => window.api.schedule.getData(currentTermId!), [currentTermId])
-
-  const term = data?.term
-  const weekIsBreak = term !== undefined && week !== null && isBreakWeek(term, week)
-  const overrideCounts = useMemo(() => (data ? overrideCountByWeek(data.overrides) : new Map<number, number>()), [data])
-
-  const scheduled = useMemo(() => (data?.lessons ?? []).filter((l) => l.meetings.length > 0), [data])
-  const patternConflicts = useMemo(() => (data ? conflictsByLesson(data, locale) : {}), [data, locale])
-
-  const allWeekPairs = useMemo(
-    () => (data && week !== null && !weekIsBreak ? weekOccurrences(data, week) : []),
-    [data, week, weekIsBreak]
+  const [editing, setEditing] = useState<EntryFull | null>(null)
+  const [blocking, setBlocking] = useState(false)
+  const { data, reload } = useAsync(
+    () => (currentScheduleId !== null ? window.api.schedule.getData(currentScheduleId) : Promise.resolve(null)),
+    [currentScheduleId]
   )
-  const weekPairs = useMemo(() => {
-    if (view === 'class' && classId !== null) return allWeekPairs.filter((p) => p.lesson.classId === classId)
-    if (view === 'teacher' && teacherId !== null) {
-      return allWeekPairs.filter((p) => (p.occ.teacherId ?? p.lesson.teacherId) === teacherId)
-    }
-    return allWeekPairs
-  }, [allWeekPairs, view, classId, teacherId])
 
-  const weekConflictMap = useMemo(
-    () => (data && week !== null ? weekConflicts(data, allWeekPairs, locale) : {}),
-    [data, allWeekPairs, week, locale]
+  const scheduleName = schedules.find((s) => s.id === currentScheduleId)?.name
+
+  const placed = useMemo(() => (data?.entries ?? []).filter((e) => e.days.length > 0 && e.lessons.length > 0), [data])
+  const conflicts = useMemo(
+    () => (data && currentScheduleId !== null ? conflictsByEntry(data, locale, currentScheduleId) : {}),
+    [data, locale, currentScheduleId]
   )
-  const conflicts = week === null ? patternConflicts : weekConflictMap
   const conflictCount = useMemo(
     () => new Set(Object.entries(conflicts).flatMap(([id, msgs]) => msgs.map((m) => `${id}:${m}`))).size,
     [conflicts]
   )
+  const soft = useMemo(() => (data ? softScore(data) : null), [data])
 
   const visible = useMemo(() => {
     if (!data) return []
-    if (view === 'class' && classId !== null) return scheduled.filter((l) => l.classId === classId)
-    if (view === 'teacher' && teacherId !== null) return scheduled.filter((l) => l.teacherId === teacherId)
-    return scheduled
-  }, [data, view, classId, teacherId, scheduled])
+    if (view === 'department' && deptId !== null)
+      return placed.filter((e) => e.lessons.some((l) => l.departmentId === deptId))
+    if (view === 'teacher' && teacherId !== null) return placed.filter((e) => e.teacherId === teacherId)
+    return placed
+  }, [data, view, deptId, teacherId, placed])
 
-  const selected = scheduled.find((l) => l.id === selectedId) ?? null
-  const soft = useMemo(
-    () =>
-      data
-        ? week !== null
-          ? scoreSoft(occurrenceCtxLessons(data, allWeekPairs), data.settings)
-          : scoreSoft(
-              scheduled.map((l) => {
-                const tc = l.teacherId !== null ? data.teachers.find((x) => x.id === l.teacherId) : undefined
-                return {
-                  id: l.id,
-                  classId: l.classId,
-                  subjectId: l.subjectId,
-                  code: lessonCode(l),
-                  meetings: l.meetings,
-                  teacher: tc
-                    ? {
-                        id: tc.id,
-                        name: tc.name,
-                        maxWeeklyHours: tc.maxWeeklyHours,
-                        unavailable: tc.unavailable,
-                        subjectIds: tc.subjectIds
-                      }
-                    : null
-                }
-              }),
-              data.settings
-            )
-        : null,
-    [data, week, allWeekPairs, scheduled]
+  const unplacedLessons = useMemo(() => {
+    if (!data) return []
+    const inEntries = new Set(data.entries.flatMap((e) => e.lessonIds))
+    return data.lessons.filter((l) => !inEntries.has(l.id))
+  }, [data])
+  const unplacedBlocks = useMemo(
+    () => (data?.entries ?? []).filter((e) => e.days.length === 0 && e.lessons.length > 1),
+    [data]
   )
 
-  const validateDrop = useCallback(
-    (cand: DropCandidate): boolean => {
-      if (!data || week === null) return true
-      const pair = allWeekPairs.find((p) => p.occ.key === cand.occKey)
-      if (!pair) return true
-      const others = occurrenceCtxLessons(
-        data,
-        allWeekPairs.filter((p) => p.occ.key !== cand.occKey && !p.occ.cancelled)
-      )
-      const tc =
-        pair.occ.teacherId !== null ? data.teachers.find((x) => x.id === pair.occ.teacherId) : undefined
-      const candidate: CtxLesson = {
-        id: -999,
-        classId: pair.lesson.classId,
-        subjectId: pair.lesson.subjectId,
-        code: lessonCode(pair.lesson),
-        meetings: [{ days: [cand.day], start: cand.start, end: cand.end }],
-        teacher: tc
-          ? {
-              id: tc.id,
-              name: tc.name,
-              maxWeeklyHours: tc.maxWeeklyHours,
-              unavailable: tc.unavailable,
-              subjectIds: tc.subjectIds
-            }
-          : null
-      }
-      return !computeConflicts([candidate, ...others], data.settings).some(
-        (c) => c.lessonId === -999 || (c.withLessonIds?.includes(-999) ?? false)
-      )
-    },
-    [data, week, allWeekPairs]
-  )
+  const selected = data?.entries.find((e) => e.id === selectedId) ?? null
 
-  if (!data || !term) return <div className="p-6 text-muted-foreground">{t('common.loading')}</div>
-
-  const fallbackTeacher = '—'
-  const letters = DAY_LETTERS[locale]
-
-  const handleSelect = (lessonId: number, occKey?: string) => {
-    if (week !== null && occKey) {
-      const pair = allWeekPairs.find((p) => p.occ.key === occKey)
-      if (pair) {
-        setEditOcc(pair)
-        return
-      }
+  const validateDrop = (cand: DropCandidate): boolean => {
+    if (!data) return true
+    const entryId = Number(cand.occKey)
+    const entry = data.entries.find((e) => e.id === entryId)
+    if (!entry) return true
+    const shifted = shiftDays(entry.days, cand.day)
+    const candidate: CtxEntry = {
+      id: -999,
+      departmentIds: entry.lessons.map((l) => l.departmentId),
+      lessonIds: entry.lessonIds,
+      code: entryCode(entry),
+      meetings: [{ days: shifted, start: cand.start, end: cand.end }],
+      teacher: null
     }
-    setSelectedId(lessonId)
+    const others = toCtxEntries(data, currentScheduleId ?? 0).filter((c) => c.id !== entryId)
+    return !computeConflicts([candidate, ...others], data.settings).some(
+      (c) => c.lessonId === -999 || (c.withLessonIds?.includes(-999) ?? false)
+    )
   }
 
   const handleDrop = async (drop: DropInfo) => {
-    if (week === null || weekIsBreak) return
-    const pair = allWeekPairs.find((p) => p.occ.key === drop.occKey)
-    if (!pair) return
-    const duration = pair.occ.end - pair.occ.start
+    if (!data) return
+    const entryId = Number(drop.occKey)
+    const entry = data.entries.find((e) => e.id === entryId)
+    if (!entry) return
+    const days = shiftDays(entry.days, drop.day)
     try {
-      if (pair.occ.source.type === 'pattern') {
-        const input: OverrideInput = {
-          lessonId: pair.lesson.id,
-          week,
-          kind: 'move',
-          fromDay: pair.occ.day,
-          toDay: drop.day,
-          start: drop.start,
-          end: drop.start + duration,
-          teacherId: pair.occ.teacherId,
-          note: ''
-        }
-        await window.api.overrides.create(input)
-      } else {
-        await window.api.overrides.update(pair.occ.source.overrideId, {
-          toDay: drop.day,
-          start: drop.start,
-          end: drop.start + duration
-        })
-      }
+      await window.api.entries.update(entryId, { days, start: drop.start, end: drop.end })
       reload()
-      toast(
-        t('toast.dropped', { day: DAY_SHORT[locale][drop.day] ?? '', time: toHHMM(drop.start) }),
-        'success'
-      )
+      toast(t('toast.entryMoved'), 'success')
     } catch (err) {
       toast(String(err), 'error')
     }
   }
 
-  const weeksList = Array.from({ length: term.weeks }, (_, i) => i + 1)
-  const sublabels: Record<number, string> | undefined =
-    week !== null
-      ? Object.fromEntries(
-          [1, 2, 3, 4, 5, 6].flatMap((d) => {
-            const label = dayDateLabel(term, week, d, locale)
-            return label !== null ? ([[d, label] as [number, string]]) : []
-          })
-        )
-      : undefined
+  if (currentScheduleId === null) {
+    return (
+      <div className="h-full flex items-center justify-center p-6">
+        <EmptyState title={t('timetable.noSchedule')} hint={t('timetable.noScheduleHint')} />
+      </div>
+    )
+  }
+  if (!data) return <div className="p-6 text-muted-foreground">{t('common.loading')}</div>
+
+  const fallbackTeacher = '—'
+  const letters = DAY_LETTERS[locale]
 
   return (
     <div className="flex flex-col h-full">
@@ -197,28 +115,22 @@ export default function TimetablesPage() {
         <Tabs value={view} onValueChange={(v) => setView(v as ViewMode)}>
           <TabsList>
             <TabsTrigger value="school">{t('timetable.school')}</TabsTrigger>
-            <TabsTrigger value="class">{t('timetable.byClass')}</TabsTrigger>
+            <TabsTrigger value="department">{t('timetable.byClass')}</TabsTrigger>
             <TabsTrigger value="teacher">{t('timetable.byTeacher')}</TabsTrigger>
           </TabsList>
         </Tabs>
-        {view === 'class' && (
-          <Select
-            value={classId === null ? 'all' : String(classId)}
-            onChange={(v) => setClassId(v === 'all' ? null : Number(v))}
-          >
+        {view === 'department' && (
+          <Select value={deptId === null ? 'all' : String(deptId)} onChange={(v) => setDeptId(v === 'all' ? null : Number(v))}>
             <SelectOption value="all">{t('timetable.selectClass')}</SelectOption>
-            {data.classes.map((c) => (
-              <SelectOption key={c.id} value={String(c.id)}>
-                {c.name}
+            {data.departments.map((d) => (
+              <SelectOption key={d.id} value={String(d.id)}>
+                {d.name}
               </SelectOption>
             ))}
           </Select>
         )}
         {view === 'teacher' && (
-          <Select
-            value={teacherId === null ? 'all' : String(teacherId)}
-            onChange={(v) => setTeacherId(v === 'all' ? null : Number(v))}
-          >
+          <Select value={teacherId === null ? 'all' : String(teacherId)} onChange={(v) => setTeacherId(v === 'all' ? null : Number(v))}>
             <SelectOption value="all">{t('timetable.selectTeacher')}</SelectOption>
             {data.teachers.map((tc) => (
               <SelectOption key={tc.id} value={String(tc.id)}>
@@ -227,451 +139,239 @@ export default function TimetablesPage() {
             ))}
           </Select>
         )}
-
-        <div className="flex items-center gap-1.5 ml-auto">
-          <Button
-            size="sm"
-            variant="ghost"
-            disabled={week === null || week <= 1}
-            onClick={() => setWeek(Math.max(1, (week ?? 1) - 1))}
-            aria-label={t('timetable.week.prev')}
-          >
-            ‹
-          </Button>
-          <Select
-            className="w-60"
-            value={week === null ? 'pattern' : String(week)}
-            onChange={(v) => setWeek(v === 'pattern' ? null : Number(v))}
-          >
-            <SelectOption value="pattern">{t('timetable.week.pattern')}</SelectOption>
-            {weeksList.map((w) => {
-              const isBreak = isBreakWeek(term, w)
-              const count = overrideCounts.get(w) ?? 0
-              const label = weekLabel(term, w, locale)
-              return (
-                <SelectOption key={w} value={String(w)} disabled={isBreak}>
-                  {`W${String(w).padStart(2, '0')} · ${label}`}
-                  {isBreak ? ` · ${t('timetable.week.break')}` : ''}
-                  {count > 0 ? ` (${count})` : ''}
-                </SelectOption>
-              )
-            })}
-          </Select>
-          <Button
-            size="sm"
-            variant="ghost"
-            disabled={week !== null && week <= 1}
-            onClick={async () => {
-              if (week === null) {
-                setWeek(1)
-                return
-              }
-              if (week >= term.weeks) {
-                await window.api.terms.update(term.id, { weeks: term.weeks + 1 })
-                setWeek(term.weeks + 1)
-                reload()
-              } else {
-                setWeek(week + 1)
-              }
-            }}
-            aria-label={t('timetable.week.next')}
-          >
-            ›
-          </Button>
-          {week !== null && !weekIsBreak && (
-            <Button size="sm" onClick={() => setAddingExtra(true)}>
-              {t('timetable.occ.addExtra')}
-            </Button>
-          )}
-        </div>
-
-        <div className="flex items-center gap-2 text-sm text-muted-foreground basis-full sm:basis-auto">
+        <div className="flex items-center gap-2 text-sm text-muted-foreground ml-auto">
           <Badge tone={conflictCount > 0 ? 'red' : 'green'}>
             {conflictCount > 0 ? t('timetable.conflicts', { count: conflictCount }) : t('timetable.noConflicts')}
           </Badge>
-          {soft && <span className="text-xs">{t('timetable.prefScore', { score: Math.round(soft.total) })}</span>}
+          {soft !== null && <span className="text-xs">{t('timetable.prefScore', { score: Math.round(soft) })}</span>}
+          <Button size="sm" onClick={() => setBlocking(true)} disabled={unplacedLessons.length < 2}>
+            {t('timetable.addBlock')}
+          </Button>
+          <Button
+            size="sm"
+            onClick={() =>
+              window.api.io.exportExcel(currentScheduleId).then((p) => p && toast(t('toast.exported', { path: p }), 'success'))
+            }
+          >
+            {t('settings.exportExcel')}
+          </Button>
         </div>
       </div>
 
       <div className="flex-1 overflow-auto p-4">
-        {week !== null && weekIsBreak ? (
-          <EmptyState title={t('timetable.week.break')} hint={t('timetable.week.breakNotice')} />
-        ) : week !== null ? (
+        {placed.length === 0 ? (
+          <EmptyState title={t('timetable.emptyTitle')} hint={t('timetable.emptyHint')} />
+        ) : (
           <TimetableGrid
-            meetings={occurrenceGridMeetings(data, weekPairs, fallbackTeacher)}
+            meetings={toGridMeetings(visible, fallbackTeacher).map((m) => ({ ...m, occKey: String(m.lessonId) }))}
             dayStart={data.settings.dayStart}
             dayEnd={data.settings.dayEnd}
             conflictsByLesson={conflicts}
             selectedId={selectedId}
-            onSelect={handleSelect}
-            daySublabels={sublabels}
+            onSelect={(lessonId) => setSelectedId(lessonId)}
             dragEnabled
             snapMinutes={Math.min(data.settings.slotStepMin, 15)}
             onDrop={handleDrop}
             validateDrop={validateDrop}
           />
-        ) : visible.length === 0 ? (
-          <EmptyState title={t('timetable.emptyTitle')} hint={t('timetable.emptyHint')} />
-        ) : (
-          <TimetableGrid
-            meetings={toGridMeetings(visible, fallbackTeacher)}
-            dayStart={data.settings.dayStart}
-            dayEnd={data.settings.dayEnd}
-            conflictsByLesson={conflicts}
-            selectedId={selectedId}
-            onSelect={handleSelect}
-          />
         )}
       </div>
 
-      {(conflictCount > 0 || selected) && (
+      {(conflictCount > 0 || selected || unplacedLessons.length > 0 || unplacedBlocks.length > 0) && (
         <div className="border-t bg-card px-5 py-3 max-h-44 overflow-y-auto text-sm">
           {selected && (
             <div className="mb-2 pb-2 border-b">
               <div className="flex items-center gap-2">
-                <span className="font-semibold">{lessonCode(selected)}</span>
-                <span className="text-muted-foreground">{selected.subjectTitle}</span>
+                <span className="font-semibold">{entryCode(selected)}</span>
+                {selected.lessons.length > 1 && <Badge tone="indigo">{t('timetable.block')}</Badge>}
                 {selected.locked && <Badge tone="amber">{t('timetable.locked')}</Badge>}
+                <span className="text-muted-foreground">{selected.teacherName ?? fallbackTeacher}</span>
+                <Button size="sm" className="ml-auto" onClick={() => setEditing(selected)}>
+                  {t('common.edit')}
+                </Button>
               </div>
               <div className="text-xs text-muted-foreground mt-0.5">
-                {selected.meetings
-                  .map((m) => `${m.days.map((d) => letters[d]).join('')} ${toHHMM(m.start)}–${toHHMM(m.end)}`)
-                  .join(' · ') || t('timetable.noMeetings')}{' '}
-                · {selected.teacherName ?? fallbackTeacher}
+                {selected.days.length > 0 && selected.start !== null && selected.end !== null
+                  ? `${selected.days.map((d) => letters[d]).join('')} ${toHHMM(selected.start)}–${toHHMM(selected.end)}`
+                  : t('timetable.noMeetings')}
               </div>
               {(conflicts[selected.id] ?? []).map((c) => (
-                <div key={c} className="text-xs text-destructive mt-1">
-                  ⚠ {c}
-                </div>
+                <div key={c} className="text-xs text-destructive mt-1">⚠ {c}</div>
               ))}
+            </div>
+          )}
+          {(unplacedLessons.length > 0 || unplacedBlocks.length > 0) && (
+            <div className="mb-2 pb-2 border-b">
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1">
+                {t('timetable.unplaced', {
+                  count: unplacedLessons.length + unplacedBlocks.length
+                })}
+              </p>
+              <div className="flex gap-1 flex-wrap">
+                {unplacedLessons.map((l) => (
+                  <Badge key={l.id} tone="slate">{l.departmentName}·{l.code}</Badge>
+                ))}
+                {unplacedBlocks.map((e) => (
+                  <Badge key={e.id} tone="indigo">{entryCode(e)}</Badge>
+                ))}
+              </div>
+              <Button size="sm" className="mt-2" onClick={() => setPage('generate')}>
+                {t('nav.generate')}
+              </Button>
             </div>
           )}
           {Object.entries(conflicts)
             .slice(0, 12)
             .map(([id, msgs]) =>
               msgs.map((m) => (
-                <div key={`${id}:${m}`} className="text-xs text-destructive">
-                  ⚠ {m}
-                </div>
+                <div key={`${id}:${m}`} className="text-xs text-destructive">⚠ {m}</div>
               ))
             )}
         </div>
       )}
 
-      {editOcc && (
-        <OccurrenceEditor
+      {editing && (
+        <EntryEditor
           data={data}
-          week={week!}
-          pair={editOcc}
-          onClose={() => setEditOcc(null)}
+          entry={editing}
+          onClose={() => setEditing(null)}
           onSaved={(message) => {
-            setEditOcc(null)
+            setEditing(null)
             reload()
             if (message) toast(message, 'success')
           }}
         />
       )}
-      {addingExtra && (
-        <ExtraSessionDialog
-          data={data}
-          week={week!}
-          onClose={() => setAddingExtra(false)}
-          onSaved={() => {
-            setAddingExtra(false)
+      {blocking && (
+        <BlockDialog
+          scheduleId={currentScheduleId}
+          unplaced={unplacedLessons}
+          onClose={() => setBlocking(false)}
+          onCreated={() => {
+            setBlocking(false)
             reload()
-            toast(t('toast.overrideSaved'), 'success')
+            toast(t('toast.blockCreated'), 'success')
           }}
         />
       )}
+      <p className="sr-only">{scheduleName}</p>
     </div>
   )
 }
 
-function OccurrenceFormFields({
-  data,
-  day,
-  setDay,
-  start,
-  setStart,
-  end,
-  setEnd,
-  teacherId,
-  setTeacherId,
-  note,
-  setNote,
-  inheritTeacherId
-}: {
-  data: ScheduleData
-  day: number
-  setDay: (d: number) => void
-  start: string
-  setStart: (s: string) => void
-  end: string
-  setEnd: (s: string) => void
-  teacherId: string
-  setTeacherId: (v: string) => void
-  note: string
-  setNote: (v: string) => void
-  inheritTeacherId: number | null
-}) {
-  const t = useT()
-  const { locale } = useI18n()
-  const letters = DAY_LETTERS[locale]
-  return (
-    <div className="flex flex-col gap-3">
-      <Field label={t('common.day')}>
-        <ToggleGroup
-          type="single"
-          variant="outline"
-          value={String(day)}
-          onValueChange={(v) => {
-            if (v !== '') setDay(Number(v))
-          }}
-          className="bg-transparent gap-1"
-        >
-          {[1, 2, 3, 4, 5, 6].map((d) => (
-            <ToggleGroupItem key={d} value={String(d)} className="w-9 h-8 px-0 text-xs font-semibold">
-              {letters[d]}
-            </ToggleGroupItem>
-          ))}
-        </ToggleGroup>
-      </Field>
-      <div className="grid grid-cols-2 gap-3">
-        <Field label={t('common.start')}>
-          <Input type="time" step={300} value={start} onChange={(e) => setStart(e.target.value)} />
-        </Field>
-        <Field label={t('common.end')}>
-          <Input type="time" step={300} value={end} onChange={(e) => setEnd(e.target.value)} />
-        </Field>
-      </div>
-      <Field label={t('teachers.col.name')}>
-        <Select value={teacherId} onChange={setTeacherId}>
-          <SelectOption value="">
-            {inheritTeacherId !== null ? data.teachers.find((tc) => tc.id === inheritTeacherId)?.name ?? '—' : '—'}
-          </SelectOption>
-          {data.teachers.map((tc) => (
-            <SelectOption key={tc.id} value={String(tc.id)}>
-              {tc.name}
-            </SelectOption>
-          ))}
-        </Select>
-      </Field>
-      <Field label={t('common.note')}>
-        <Input value={note} onChange={(e) => setNote(e.target.value)} />
-      </Field>
-    </div>
-  )
+function shiftDays(days: number[], targetDay: number): number[] {
+  if (days.length === 0) return [targetDay]
+  const shift = targetDay - Math.min(...days)
+  const shifted = days.map((d) => Math.min(6, d + shift))
+  return [...new Set(shifted)].sort((a, b) => a - b)
 }
 
-function OccurrenceEditor({
+function EntryEditor({
   data,
-  week,
-  pair,
+  entry,
   onClose,
   onSaved
 }: {
   data: ScheduleData
-  week: number
-  pair: { occ: Occurrence; lesson: LessonFull }
+  entry: EntryFull
   onClose: () => void
   onSaved: (message?: string) => void
 }) {
   const t = useT()
-  const { occ, lesson } = pair
-  const sourceOverrideId = occ.source.type === 'override' ? occ.source.overrideId : null
-  const override = sourceOverrideId !== null ? data.overrides.find((o) => o.id === sourceOverrideId) ?? null : null
-  const [day, setDay] = useState<number>(occ.day)
-  const [start, setStart] = useState(toHHMM(occ.start))
-  const [end, setEnd] = useState(toHHMM(occ.end))
-  const [teacherId, setTeacherId] = useState(
-    override?.teacherId !== null && override?.teacherId !== undefined ? String(override.teacherId) : ''
-  )
-  const [note, setNote] = useState(override?.note ?? '')
+  const { locale } = useI18n()
+  const letters = DAY_LETTERS[locale]
+  const [days, setDays] = useState<number[]>([...entry.days])
+  const [start, setStart] = useState(entry.start !== null ? toHHMM(entry.start) : '09:00')
+  const [end, setEnd] = useState(entry.end !== null ? toHHMM(entry.end) : toHHMM((entry.lessons[0]?.durationMinutes ?? 40) + 540))
+  const [teacherId, setTeacherId] = useState(entry.teacherId !== null ? String(entry.teacherId) : '')
+  const [locked, setLocked] = useState(entry.locked)
+  const [busy, setBusy] = useState(false)
 
+  const eligible = data.teachers.filter((tc) => entry.lessonIds.every((lid) => tc.lessonIds.includes(lid)))
   const parsedStart = fromHHMM(start) ?? -1
   const parsedEnd = fromHHMM(end) ?? -1
   const valid = parsedStart >= 0 && parsedEnd > parsedStart
 
-  const moveValues = () => ({
-    toDay: day,
-    start: parsedStart,
-    end: parsedEnd,
-    teacherId: teacherId ? Number(teacherId) : null,
-    note
-  })
-
-  const saveMove = async (message: string) => {
-    if (!valid) return
-    if (override && override.kind !== 'cancel' && occ.source.type === 'override') {
-      await window.api.overrides.update(override.id, moveValues())
-    } else {
-      await window.api.overrides.create({
-        lessonId: lesson.id,
-        week,
-        kind: 'move',
-        fromDay: occ.day,
-        ...moveValues()
-      })
-    }
-    onSaved(message)
-  }
-
-  const title = `${lessonCode(lesson)} · ${t('timetable.occ.editTitle')}`
-
-  return (
-    <Modal title={title} onClose={onClose}>
-      <p className="text-xs text-muted-foreground mb-3">
-        {occ.cancelled || (occ.source.type === 'pattern' && !override)
-          ? t('timetable.occ.patternInfo')
-          : t('timetable.occ.overrideInfo')}
-      </p>
-      {occ.cancelled ? (
-        <div className="flex justify-end gap-2">
-          <Button onClick={onClose}>{t('common.cancel')}</Button>
-          <Button
-            variant="primary"
-            onClick={async () => {
-              if (occ.cancelOverrideId !== null) await window.api.overrides.remove(occ.cancelOverrideId)
-              onSaved(t('toast.overrideDeleted'))
-            }}
-          >
-            {t('timetable.occ.restore')}
-          </Button>
-        </div>
-      ) : (
-        <>
-          <OccurrenceFormFields
-            data={data}
-            day={day}
-            setDay={setDay}
-            start={start}
-            setStart={setStart}
-            end={end}
-            setEnd={setEnd}
-            teacherId={teacherId}
-            setTeacherId={setTeacherId}
-            note={note}
-            setNote={setNote}
-            inheritTeacherId={lesson.teacherId}
-          />
-          <div className="flex justify-between gap-2 pt-4">
-            <div>
-              {occ.source.type === 'override' && sourceOverrideId !== null && (
-                <Button
-                  variant="danger"
-                  onClick={async () => {
-                    await window.api.overrides.remove(sourceOverrideId)
-                    onSaved(t('toast.overrideDeleted'))
-                  }}
-                >
-                  {occ.extra ? t('timetable.occ.deleteExtra') : t('timetable.occ.restore')}
-                </Button>
-              )}
-              {occ.source.type === 'pattern' && (
-                <Button
-                  variant="danger"
-                  onClick={async () => {
-                    await window.api.overrides.create({
-                      lessonId: lesson.id,
-                      week,
-                      kind: 'cancel',
-                      fromDay: occ.day,
-                      toDay: null,
-                      start: null,
-                      end: null,
-                      teacherId: null,
-                      note: ''
-                    })
-                    onSaved(t('toast.overrideSaved'))
-                  }}
-                >
-                  {t('timetable.occ.cancelAction')}
-                </Button>
-              )}
-            </div>
-            <div className="flex gap-2">
-              <Button onClick={onClose}>{t('common.cancel')}</Button>
-              <Button variant="primary" disabled={!valid} onClick={() => saveMove(t('toast.overrideSaved'))}>
-                {t('timetable.occ.moveAction')}
-              </Button>
-            </div>
-          </div>
-        </>
-      )}
-    </Modal>
-  )
-}
-
-function ExtraSessionDialog({
-  data,
-  week,
-  onClose,
-  onSaved
-}: {
-  data: ScheduleData
-  week: number
-  onClose: () => void
-  onSaved: () => void
-}) {
-  const t = useT()
-  const candidates = data.lessons.filter((l) => l.meetings.length > 0)
-  const [lessonId, setLessonId] = useState<string>(candidates[0] ? String(candidates[0].id) : '')
-  const [day, setDay] = useState(1)
-  const [start, setStart] = useState('15:00')
-  const [end, setEnd] = useState('15:40')
-  const [teacherId, setTeacherId] = useState('')
-  const [note, setNote] = useState('')
-
-  const lesson = candidates.find((l) => l.id === Number(lessonId))
-  const parsedStart = fromHHMM(start) ?? -1
-  const parsedEnd = fromHHMM(end) ?? -1
-  const valid = !!lesson && parsedStart >= 0 && parsedEnd > parsedStart
-
   const save = async () => {
-    if (!valid || !lesson) return
-    await window.api.overrides.create({
-      lessonId: lesson.id,
-      week,
-      kind: 'extra',
-      fromDay: null,
-      toDay: day,
-      start: parsedStart,
-      end: parsedEnd,
-      teacherId: teacherId ? Number(teacherId) : null,
-      note
-    })
-    onSaved()
+    if (!valid) return
+    setBusy(true)
+    try {
+      await window.api.entries.update(entry.id, {
+        days,
+        start: days.length > 0 ? parsedStart : null,
+        end: days.length > 0 ? parsedEnd : null,
+        teacherId: teacherId ? Number(teacherId) : null,
+        locked
+      })
+      onSaved(t('toast.entrySaved'))
+    } catch (err) {
+      useApp.getState().toast(String(err), 'error')
+      setBusy(false)
+    }
   }
 
   return (
-    <Modal title={t('timetable.occ.addTitle')} onClose={onClose}>
+    <Modal title={`${entryCode(entry)} · ${t('timetable.editEntry')}`} onClose={onClose}>
+      <p className="text-xs text-muted-foreground mb-3">
+        {entry.lessons.map((l) => `${l.departmentName}·${l.code} (${l.sessionsPerWeek}×${l.durationMinutes})`).join(' + ')}
+        {entry.lessons.length > 1 && <Badge tone="indigo">{t('timetable.block')}</Badge>}
+      </p>
       <div className="flex flex-col gap-3">
-        <Field label={t('classes.col.subject')}>
-          <Select value={lessonId} onChange={setLessonId}>
-            {candidates.map((l) => (
-              <SelectOption key={l.id} value={String(l.id)}>
-                {lessonCode(l)} · {l.subjectTitle}
+        <Field label={t('common.day')}>
+          <ToggleGroup
+            type="multiple"
+            variant="outline"
+            value={days.map(String)}
+            onValueChange={(vals) => setDays(vals.map(Number).sort((a, b) => a - b))}
+            className="bg-transparent gap-1"
+          >
+            {[1, 2, 3, 4, 5, 6].map((d) => (
+              <ToggleGroupItem key={d} value={String(d)} className="w-9 h-8 px-0 text-xs font-semibold">
+                {letters[d]}
+              </ToggleGroupItem>
+            ))}
+          </ToggleGroup>
+        </Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label={t('common.start')}>
+            <Input type="time" step={300} value={start} onChange={(e) => setStart(e.target.value)} />
+          </Field>
+          <Field label={t('common.end')}>
+            <Input type="time" step={300} value={end} onChange={(e) => setEnd(e.target.value)} />
+          </Field>
+        </div>
+        <Field label={t('teachers.title')} hint={t('teachers.lessonsHint')}>
+          <Select value={teacherId || 'any'} onChange={(v) => setTeacherId(v === 'any' ? '' : v)}>
+            <SelectOption value="any">—</SelectOption>
+            {eligible.map((tc) => (
+              <SelectOption key={tc.id} value={String(tc.id)}>
+                {tc.name}
               </SelectOption>
             ))}
           </Select>
         </Field>
-        <OccurrenceFormFields
-          data={data}
-          day={day}
-          setDay={setDay}
-          start={start}
-          setStart={setStart}
-          end={end}
-          setEnd={setEnd}
-          teacherId={teacherId}
-          setTeacherId={setTeacherId}
-          note={note}
-          setNote={setNote}
-          inheritTeacherId={lesson?.teacherId ?? null}
-        />
-        <div className="flex justify-end gap-2 pt-2">
+        <Field label={t('classes.locked')}>
+          <div className="flex items-center gap-2 h-[34px]">
+            <Checkbox id="entry-locked" checked={locked} onCheckedChange={(v) => setLocked(v === true)} />
+            <label htmlFor="entry-locked" className="text-sm text-muted-foreground cursor-pointer">
+              {t('timetable.locked')}
+            </label>
+          </div>
+        </Field>
+      </div>
+      <div className="flex justify-between gap-2 pt-4">
+        <Button
+          variant="danger"
+          onClick={async () => {
+            await window.api.entries.remove(entry.id)
+            onSaved(t('timetable.entryRemoved'))
+          }}
+        >
+          {entry.lessons.length > 1 ? t('timetable.removeEntryBlock') : t('timetable.entryRemoved')}
+        </Button>
+        <div className="flex gap-2">
           <Button onClick={onClose}>{t('common.cancel')}</Button>
-          <Button variant="primary" disabled={!valid} onClick={save}>
+          <Button variant="primary" disabled={busy || !valid} onClick={save}>
             {t('common.save')}
           </Button>
         </div>
@@ -680,4 +380,83 @@ function ExtraSessionDialog({
   )
 }
 
-export type { MeetingOverride }
+function BlockDialog({
+  scheduleId,
+  unplaced,
+  onClose,
+  onCreated
+}: {
+  scheduleId: number
+  unplaced: LessonRef[]
+  onClose: () => void
+  onCreated: () => void
+}) {
+  const t = useT()
+  const [first, setFirst] = useState<number>(unplaced[0]?.id ?? 0)
+  const [second, setSecond] = useState<number>(0)
+  const [busy, setBusy] = useState(false)
+
+  const firstLesson = unplaced.find((l) => l.id === first)
+  const partners = firstLesson
+    ? unplaced.filter(
+        (l) =>
+          l.id !== firstLesson.id &&
+          l.departmentId !== firstLesson.departmentId &&
+          l.sessionsPerWeek === firstLesson.sessionsPerWeek &&
+          l.durationMinutes === firstLesson.durationMinutes
+      )
+    : []
+  const partner = partners.find((l) => l.id === second) ?? null
+
+  const create = async () => {
+    if (!firstLesson || !partner) return
+    setBusy(true)
+    try {
+      await window.api.entries.create(scheduleId, {
+        lessonIds: [firstLesson.id, partner.id],
+        days: [],
+        start: null,
+        end: null,
+        teacherId: null,
+        locked: false
+      })
+      onCreated()
+    } catch (err) {
+      useApp.getState().toast(String(err), 'error')
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Modal title={t('timetable.addBlock')} onClose={onClose}>
+      <p className="text-xs text-muted-foreground mb-3">{t('timetable.blockHint')}</p>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label={t('timetable.blockFirst')}>
+          <Select value={String(first)} onChange={(v) => { setFirst(Number(v)); setSecond(0) }}>
+            {unplaced.map((l) => (
+              <SelectOption key={l.id} value={String(l.id)}>
+                {l.departmentName}·{l.code}
+              </SelectOption>
+            ))}
+          </Select>
+        </Field>
+        <Field label={t('timetable.blockSecond')}>
+          <Select value={String(second)} onChange={(v) => setSecond(Number(v))}>
+            <SelectOption value="0">—</SelectOption>
+            {partners.map((l) => (
+              <SelectOption key={l.id} value={String(l.id)}>
+                {l.departmentName}·{l.code}
+              </SelectOption>
+            ))}
+          </Select>
+        </Field>
+      </div>
+      <div className="flex justify-end gap-2 pt-4">
+        <Button onClick={onClose}>{t('common.cancel')}</Button>
+        <Button variant="primary" disabled={busy || !partner} onClick={create}>
+          {t('timetable.createBlock')}
+        </Button>
+      </div>
+    </Modal>
+  )
+}

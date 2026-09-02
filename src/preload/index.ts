@@ -2,23 +2,17 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type { RendererApi } from '@shared/api'
 
 const api: RendererApi = {
-  terms: {
-    list: () => ipcRenderer.invoke('terms:list'),
-    create: (name) => ipcRenderer.invoke('terms:create', name),
-    update: (id, patch) => ipcRenderer.invoke('terms:update', id, patch),
-    remove: (id) => ipcRenderer.invoke('terms:remove', id)
+  departments: {
+    list: () => ipcRenderer.invoke('departments:list'),
+    create: (data) => ipcRenderer.invoke('departments:create', data),
+    update: (id, patch) => ipcRenderer.invoke('departments:update', id, patch),
+    remove: (id) => ipcRenderer.invoke('departments:remove', id)
   },
-  classes: {
-    list: (termId) => ipcRenderer.invoke('classes:list', termId),
-    create: (termId, data) => ipcRenderer.invoke('classes:create', termId, data),
-    update: (id, data) => ipcRenderer.invoke('classes:update', id, data),
-    remove: (id) => ipcRenderer.invoke('classes:remove', id)
-  },
-  subjects: {
-    list: (termId) => ipcRenderer.invoke('subjects:list', termId),
-    create: (termId, data) => ipcRenderer.invoke('subjects:create', termId, data),
-    update: (id, data) => ipcRenderer.invoke('subjects:update', id, data),
-    remove: (id) => ipcRenderer.invoke('subjects:remove', id)
+  lessons: {
+    list: () => ipcRenderer.invoke('lessons:list'),
+    create: (data) => ipcRenderer.invoke('lessons:create', data),
+    update: (id, patch) => ipcRenderer.invoke('lessons:update', id, patch),
+    remove: (id) => ipcRenderer.invoke('lessons:remove', id)
   },
   teachers: {
     list: () => ipcRenderer.invoke('teachers:list'),
@@ -26,35 +20,32 @@ const api: RendererApi = {
     update: (id, data) => ipcRenderer.invoke('teachers:update', id, data),
     remove: (id) => ipcRenderer.invoke('teachers:remove', id)
   },
-  lessons: {
-    list: (termId) => ipcRenderer.invoke('lessons:list', termId),
-    create: (classId, data) => ipcRenderer.invoke('lessons:create', classId, data),
-    update: (id, data) => ipcRenderer.invoke('lessons:update', id, data),
-    setSchedule: (id, days, start, end) => ipcRenderer.invoke('lessons:setSchedule', id, days, start, end),
-    remove: (id) => ipcRenderer.invoke('lessons:remove', id)
+  schedules: {
+    list: () => ipcRenderer.invoke('schedules:list'),
+    create: (name) => ipcRenderer.invoke('schedules:create', name),
+    rename: (id, name) => ipcRenderer.invoke('schedules:rename', id, name),
+    remove: (id) => ipcRenderer.invoke('schedules:remove', id)
+  },
+  entries: {
+    create: (scheduleId, data) => ipcRenderer.invoke('entries:create', scheduleId, data),
+    update: (id, patch) => ipcRenderer.invoke('entries:update', id, patch),
+    remove: (id) => ipcRenderer.invoke('entries:remove', id)
+  },
+  schedule: {
+    getData: (scheduleId) => ipcRenderer.invoke('schedule:getData', scheduleId),
+    applyEntries: (scheduleId, assignments) => ipcRenderer.invoke('schedule:applyEntries', scheduleId, assignments),
+    assignTeachers: (scheduleId, assignments) => ipcRenderer.invoke('schedule:assignTeachers', scheduleId, assignments)
   },
   settings: {
     get: () => ipcRenderer.invoke('settings:get'),
     update: (patch) => ipcRenderer.invoke('settings:update', patch)
   },
-  overrides: {
-    create: (data) => ipcRenderer.invoke('overrides:create', data),
-    update: (id, patch) => ipcRenderer.invoke('overrides:update', id, patch),
-    remove: (id) => ipcRenderer.invoke('overrides:remove', id),
-    resetWeek: (termId, week, lessonId) => ipcRenderer.invoke('overrides:resetWeek', termId, week, lessonId)
-  },
-  schedule: {
-    getData: (termId) => ipcRenderer.invoke('schedule:getData', termId),
-    applyClasses: (termId, assignments) => ipcRenderer.invoke('schedule:applyClasses', termId, assignments),
-    assignTeachers: (termId, assignments) => ipcRenderer.invoke('schedule:assignTeachers', termId, assignments),
-    unschedule: (lessonIds) => ipcRenderer.invoke('schedule:unschedule', lessonIds)
-  },
   io: {
-    exportJson: (termId) => ipcRenderer.invoke('io:exportJson', termId),
+    exportJson: () => ipcRenderer.invoke('io:exportJson'),
     importJson: () => ipcRenderer.invoke('io:importJson'),
-    exportExcel: (termId, scope, week) => ipcRenderer.invoke('io:exportExcel', termId, scope, week),
-    exportCsv: (entity, termId) => ipcRenderer.invoke('io:exportCsv', entity, termId),
-    importCsv: (entity, text, termId) => ipcRenderer.invoke('io:importCsv', entity, text, termId),
+    exportExcel: (scheduleId) => ipcRenderer.invoke('io:exportExcel', scheduleId),
+    exportCsv: (entity) => ipcRenderer.invoke('io:exportCsv', entity),
+    importCsv: (entity, text) => ipcRenderer.invoke('io:importCsv', entity, text),
     seedSample: () => ipcRenderer.invoke('io:seedSample')
   },
   licensing: {

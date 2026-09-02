@@ -5,25 +5,19 @@ import { fromHHMM, toHHMM } from '@shared/time'
 import { localeNames, localeOrder, useI18n, useT, type Locale } from '../i18n'
 import { useTheme, type ThemeChoice } from '../theme'
 import { useLicensing } from '../store/useLicensing'
-import { Badge, Button, ConfirmDialog, Field, Input, Modal, Select, SelectOption, ToggleGroup, ToggleGroupItem } from '../components/ui'
-import type { CsvEntity, ExcelScope, ImportCounts } from '@shared/api'
-import type { Settings, Term } from '@shared/types'
-import { weekLabel } from '@shared/weeks'
+import { Badge, Button, Field, Input, Select, SelectOption } from '../components/ui'
+import type { CsvEntity, ImportCounts } from '@shared/api'
+import type { Settings } from '@shared/types'
 
 export default function SettingsPage() {
-  const { terms, currentTermId, selectTerm, loadTerms, toast } = useApp()
+  const { toast } = useApp()
   const t = useT()
   const { locale, setLocale } = useI18n()
   const { choice: themeChoice, setChoice: setThemeChoice } = useTheme()
   const licenseInfo = useLicensing((s) => s.info)
   const { data: settings, reload: reloadSettings } = useAsync(() => window.api.settings.get(), [])
   const [draft, setDraft] = useState<Settings | null>(null)
-  const [newTerm, setNewTerm] = useState('')
-  const [confirmingTerm, setConfirmingTerm] = useState<Term | null>(null)
-  const [editingTerm, setEditingTerm] = useState<Term | null>(null)
-  const [excelScope, setExcelScope] = useState<ExcelScope>('pattern')
-  const [excelWeek, setExcelWeek] = useState<number>(1)
-  const [csvEntity, setCsvEntity] = useState<CsvEntity>('subjects')
+  const [csvEntity, setCsvEntity] = useState<CsvEntity>('departments')
   const csvFileRef = useRef<HTMLInputElement | null>(null)
 
   useEffect(() => {
@@ -31,8 +25,6 @@ export default function SettingsPage() {
   }, [settings, draft])
 
   if (!draft) return <div className="p-6 text-muted-foreground">{t('common.loading')}</div>
-
-  const currentTerm = terms.find((x) => x.id === currentTermId) ?? null
 
   const set = (patch: Partial<Settings>) => setDraft({ ...draft, ...patch })
   const timeSet = (v: string, fallback: number) => fromHHMM(v) ?? fallback
@@ -50,9 +42,9 @@ export default function SettingsPage() {
   const importCsv = async (file: File) => {
     const text = await file.text()
     try {
-      const res: ImportCounts = await window.api.io.importCsv(csvEntity, text, currentTermId!)
+      const res: ImportCounts = await window.api.io.importCsv(csvEntity, text)
       const summary = t('toast.csvImport', {
-        entity: t(`entity.${csvEntity}` as 'entity.subjects'),
+        entity: t(`entity.${csvEntity}` as 'entity.departments'),
         added: res.imported,
         updated: res.updated
       })
@@ -98,9 +90,6 @@ export default function SettingsPage() {
           </Field>
           <Field label={t('settings.slotStep')} hint={t('settings.slotStepHint')}>
             <Input type="number" min="5" max="60" step="5" value={draft.slotStepMin} onChange={(e) => set({ slotStepMin: parseInt(e.target.value, 10) || 30 })} />
-          </Field>
-          <Field label={t('settings.defaultWeeks')}>
-            <Input type="number" min="1" max="53" value={draft.defaultWeeks} onChange={(e) => set({ defaultWeeks: Math.max(1, Math.min(53, parseInt(e.target.value, 10) || 14)) })} />
           </Field>
           <Field label={t('settings.prefStart')} hint={t('settings.prefHint')}>
             <Input type="time" step={300} value={toHHMM(draft.preferredStart)} onChange={(e) => set({ preferredStart: timeSet(e.target.value, 540) })} />
@@ -181,142 +170,43 @@ export default function SettingsPage() {
       </section>
 
       <section className="bg-card rounded-lg border p-5">
-        <h2 className="font-semibold mb-4">{t('settings.terms')}</h2>
-        <div className="flex flex-col gap-2">
-          {terms.map((term) => (
-            <div key={term.id} className="flex items-center gap-3 text-sm">
-              <span className={`flex-1 ${term.id === currentTermId ? 'font-semibold' : ''}`}>{term.name}</span>
-              <span className="text-xs text-muted-foreground">
-                {term.weeks} {t('settings.termWeeks').toLowerCase()}
-                {term.breakWeeks.length > 0 ? ` · ${term.breakWeeks.length} ${t('settings.termBreaks').toLowerCase()}` : ''}
-              </span>
-              {term.id === currentTermId && <span className="text-xs text-primary">{t('settings.current')}</span>}
-              <Button size="sm" onClick={() => setEditingTerm(term)}>
-                {t('settings.termEdit')}
-              </Button>
-              <Button variant="danger" size="sm" onClick={() => setConfirmingTerm(term)}>
-                {t('common.delete')}
-              </Button>
-            </div>
-          ))}
-        </div>
-        {confirmingTerm && (
-          <ConfirmDialog
-            title={t('common.confirmTitle')}
-            description={t('settings.confirmDeleteTerm', { name: confirmingTerm.name })}
-            confirmLabel={t('common.delete')}
-            cancelLabel={t('common.cancel')}
-            onClose={() => setConfirmingTerm(null)}
-            onConfirm={async () => {
-              await window.api.terms.remove(confirmingTerm.id)
-              setConfirmingTerm(null)
-              await loadTerms()
-              toast(t('toast.termDeleted'), 'success')
-            }}
-          />
-        )}
-        {editingTerm && (
-          <TermDialog
-            term={editingTerm}
-            onClose={() => setEditingTerm(null)}
-            onSaved={async () => {
-              setEditingTerm(null)
-              await loadTerms()
-              toast(t('toast.termSaved'), 'success')
-            }}
-          />
-        )}
-        <div className="flex gap-2 mt-3">
-          <Input value={newTerm} onChange={(e) => setNewTerm(e.target.value)} placeholder={t('settings.termPlaceholder')} className="w-56" />
-          <Button
-            onClick={async () => {
-              if (!newTerm.trim()) return
-              const term = await window.api.terms.create(newTerm.trim())
-              setNewTerm('')
-              await loadTerms()
-              selectTerm(term.id)
-              toast(t('toast.termCreated', { name: term.name }), 'success')
-            }}
-          >
-            {t('settings.addTerm')}
+        <h2 className="font-semibold mb-1">{t('settings.exportTitle')}</h2>
+        <p className="text-xs text-muted-foreground mb-3">{t('settings.exportDesc')}</p>
+        <div className="flex gap-2 flex-wrap items-center">
+          <Button onClick={() => window.api.io.exportJson().then((p) => p && toast(t('toast.exported', { path: p }), 'success'))}>
+            {t('settings.exportJson')}
           </Button>
+          {(['departments', 'lessons', 'teachers'] as CsvEntity[]).map((entity) => (
+            <Button
+              key={entity}
+              onClick={() =>
+                window.api.io.exportCsv(entity).then((p) => p && toast(t('toast.exported', { path: p }), 'success'))
+              }
+            >
+              {t('settings.exportCsv', { entity: t(`entity.${entity}` as 'entity.departments') })}
+            </Button>
+          ))}
         </div>
       </section>
 
       <section className="bg-card rounded-lg border p-5">
-        <h2 className="font-semibold mb-1">{t('settings.exportTitle')}</h2>
-        <p className="text-xs text-muted-foreground mb-3">{t('settings.exportDesc')}</p>
-        <div className="flex gap-2 flex-wrap items-center">
-          <Button
-            variant="primary"
-            onClick={() =>
-              window.api.io
-                .exportExcel(currentTermId!, excelScope, excelWeek)
-                .then((p) => p && toast(t('toast.exported', { path: p }), 'success'))
-            }
-          >
-            {t('settings.exportExcel')}
-          </Button>
-          <Field label={t('settings.excelScope')}>
-            <Select className="w-48" value={excelScope} onChange={(v) => setExcelScope(v as ExcelScope)}>
-              <SelectOption value="pattern">{t('excel.pattern')}</SelectOption>
-              <SelectOption value="week">{t('excel.week')}</SelectOption>
-              <SelectOption value="all">{t('excel.all')}</SelectOption>
-            </Select>
-          </Field>
-          {excelScope === 'week' && currentTerm && (
-            <Field label=              {t('settings.excelWeek')}>
-              <Select className="w-48" value={String(excelWeek)} onChange={(v) => setExcelWeek(Number(v))}>
-                {Array.from({ length: currentTerm.weeks }, (_, i) => i + 1).map((w) => (
-                  <SelectOption key={w} value={String(w)}>
-                    {`W${String(w).padStart(2, '0')} · ${weekLabel(currentTerm, w, locale)}`}
-                  </SelectOption>
-                ))}
-              </Select>
-            </Field>
-          )}
-          <Button
-            onClick={() => window.api.io.exportJson(currentTermId!).then((p) => p && toast(t('toast.exported', { path: p }), 'success'))}
-          >
-            {t('settings.exportJson')}
-          </Button>
-          {(['subjects', 'teachers', 'classes', 'lessons'] as CsvEntity[]).map((entity) => (
-            <Button
-              key={entity}
-              onClick={() =>
-                window.api.io.exportCsv(entity, currentTermId!).then(
-                  (p) => p && toast(t('toast.exported', { path: p }), 'success')
-                )
-              }
-            >
-              {t('settings.exportCsv', { entity: t(`entity.${entity}` as 'entity.subjects') })}
-            </Button>
-          ))}
-        </div>
-
-        <h2 className="font-semibold mt-6 mb-1">{t('settings.importTitle')}</h2>
+        <h2 className="font-semibold mb-1">{t('settings.importTitle')}</h2>
         <div className="flex gap-2 flex-wrap items-center">
           <Button
             onClick={async () => {
               const res = await window.api.io.importJson()
               if (res) {
-                await loadTerms()
-                toast(
-                  t('toast.importedJson', { name: res.termName, classes: res.classes, lessons: res.lessons }),
-                  'success'
-                )
+                await useApp.getState().loadSchedules()
+                toast(t('toast.importedJson', { schedules: res.schedules }), 'success')
               }
             }}
           >
             {t('settings.importJson')}
           </Button>
           <Select value={csvEntity} onChange={(v) => setCsvEntity(v as CsvEntity)}>
-            <SelectOption value="subjects">subjects: code,title</SelectOption>
-            <SelectOption value="teachers">teachers: name,email,maxWeeklyHours,subjectCodes,unavailDays,unavailStart,unavailEnd</SelectOption>
-            <SelectOption value="classes">classes: name,grade,capacity,homeroom</SelectOption>
-            <SelectOption value="lessons">
-              lessons: className,subjectCode,sessionsPerWeek,durationMinutes,teacherEmail,days,start,end,locked
-            </SelectOption>
+            <SelectOption value="departments">departments: name,capacity,homeroom</SelectOption>
+            <SelectOption value="lessons">lessons: departmentName,code,title,sessionsPerWeek,durationMinutes</SelectOption>
+            <SelectOption value="teachers">teachers: name,email,maxWeeklyHours,lessons,unavailDays,unavailStart,unavailEnd</SelectOption>
           </Select>
           <input
             ref={csvFileRef}
@@ -334,77 +224,5 @@ export default function SettingsPage() {
         <p className="text-xs text-muted-foreground mt-2">{t('settings.csvHint')}</p>
       </section>
     </div>
-  )
-}
-
-function TermDialog({
-  term,
-  onClose,
-  onSaved
-}: {
-  term: Term
-  onClose: () => void
-  onSaved: () => Promise<void>
-}) {
-  const t = useT()
-  const { locale } = useI18n()
-  const [name, setName] = useState(term.name)
-  const [weeks, setWeeks] = useState(String(term.weeks))
-  const [startDate, setStartDate] = useState(term.startDate)
-  const [breaks, setBreaks] = useState<number[]>([...term.breakWeeks])
-  const weekCount = Math.max(1, Math.min(53, parseInt(weeks, 10) || 14))
-
-  const save = async () => {
-    await window.api.terms.update(term.id, {
-      name: name.trim() || term.name,
-      weeks: weekCount,
-      startDate,
-      breakWeeks: [...breaks].sort((a, b) => a - b)
-    })
-    await onSaved()
-  }
-
-  return (
-    <Modal title={`${t('settings.termEdit')} � ${term.name}`} onClose={onClose}>
-      <div className="flex flex-col gap-3">
-        <Field label={t('settings.termName')}>
-          <Input value={name} onChange={(e) => setName(e.target.value)} />
-        </Field>
-        <div className="grid grid-cols-2 gap-3">
-          <Field label={t('settings.termWeeks')}>
-            <Input type="number" min="1" max="53" value={weeks} onChange={(e) => setWeeks(e.target.value)} />
-          </Field>
-          <Field label={t('settings.termStart')}>
-            <Input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
-          </Field>
-        </div>
-        <Field label={t('settings.termBreaks')}>
-          <ToggleGroup
-            type="multiple"
-            variant="outline"
-            value={breaks.map(String)}
-            onValueChange={(vals) => setBreaks(vals.map(Number).filter((n) => n >= 1 && n <= weekCount))}
-            className="bg-transparent gap-1 flex-wrap justify-start h-auto"
-          >
-            {Array.from({ length: weekCount }, (_, i) => i + 1).map((w) => (
-              <ToggleGroupItem
-                key={w}
-                value={String(w)}
-                className="w-9 h-8 px-0 text-xs font-semibold"
-                title={weekLabel({ ...term, weeks: weekCount, startDate, breakWeeks: breaks }, w, locale)}
-              >
-                {w}
-              </ToggleGroupItem>
-            ))}
-          </ToggleGroup>
-        </Field>
-        <div className="flex justify-end gap-2 pt-2">
-          <Button onClick={onClose}>{t('common.cancel')}</Button>
-          <Button variant="primary" onClick={save}>
-            {t('common.save')}
-          </Button>
-        </div>
-      </div>
-    </Modal>
   )
 }

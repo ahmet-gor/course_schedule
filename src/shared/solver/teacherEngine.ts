@@ -1,29 +1,29 @@
 import type {
-  PlacedLesson,
+  PlacedEntry,
   Teacher,
   TeacherSolveInput,
   TeacherSolveResult,
   TeacherSolution
 } from '../types'
 import { overlap } from '../time'
-import type { SolveProgress } from './classEngine'
+import type { SolveProgress } from './entryEngine'
 
 export function teacherPrecheck(input: TeacherSolveInput): string[] {
   const problems: string[] = []
-  for (const l of input.lessons) {
+  for (const l of input.entries) {
     if (l.meetings.length === 0) {
-      problems.push(`${l.code}: not scheduled yet — run class schedule generation first`)
+      problems.push(`${l.code}: not scheduled yet — run schedule generation first`)
       continue
     }
-    const qualified = input.teachers.filter((t) => t.subjectIds.includes(l.subjectId))
+    const qualified = input.teachers.filter((t) => l.lessonIds.every((lid) => t.lessonIds.includes(lid)))
     if (qualified.length === 0) {
-      problems.push(`${l.code}: no teacher is qualified for this subject`)
+      problems.push(`${l.code}: no teacher is related to this lesson`)
     }
   }
   return problems
 }
 
-function teacherAvailableFor(t: Teacher, l: PlacedLesson): boolean {
+function teacherAvailableFor(t: Teacher, l: PlacedEntry): boolean {
   for (const m of l.meetings) {
     for (const d of m.days) {
       for (const u of t.unavailable) {
@@ -34,7 +34,7 @@ function teacherAvailableFor(t: Teacher, l: PlacedLesson): boolean {
   return true
 }
 
-function lessonMinutes(l: PlacedLesson): number {
+function lessonMinutes(l: PlacedEntry): number {
   let minutes = 0
   for (const m of l.meetings) {
     for (const _d of m.days) minutes += m.end - m.start
@@ -45,13 +45,13 @@ function lessonMinutes(l: PlacedLesson): number {
 export function solveTeachers(input: TeacherSolveInput, onProgress?: (p: SolveProgress) => void): TeacherSolveResult {
   const { settings, teachers } = input
   const problems = teacherPrecheck(input)
-  const problemIds = new Set(input.lessons.filter((l) => l.meetings.length === 0).map((l) => l.id))
+  const problemIds = new Set(input.entries.filter((l) => l.meetings.length === 0).map((l) => l.id))
 
   const teacherById = new Map(teachers.map((t) => [t.id, t]))
 
   const bookings = new Map<number, { day: number; s: number; e: number }[]>()
   const load = new Map<number, number>()
-  const book = (teacherId: number, l: PlacedLesson) => {
+  const book = (teacherId: number, l: PlacedEntry) => {
     for (const m of l.meetings) {
       for (const d of m.days) {
         const arr = bookings.get(teacherId) ?? []
@@ -61,7 +61,7 @@ export function solveTeachers(input: TeacherSolveInput, onProgress?: (p: SolvePr
     }
     load.set(teacherId, (load.get(teacherId) ?? 0) + lessonMinutes(l))
   }
-  const unbookLesson = (teacherId: number, l: PlacedLesson) => {
+  const unbookLesson = (teacherId: number, l: PlacedEntry) => {
     const arr = bookings.get(teacherId)
     if (arr) {
       for (let i = arr.length - 1; i >= 0; i--) {
@@ -79,8 +79,8 @@ export function solveTeachers(input: TeacherSolveInput, onProgress?: (p: SolvePr
   }
 
   const fixedAssignments = new Map<number, number>()
-  const assignable: PlacedLesson[] = []
-  for (const l of input.lessons) {
+  const assignable: PlacedEntry[] = []
+  for (const l of input.entries) {
     if (problemIds.has(l.id)) continue
     if (l.fixed && l.teacherId !== null && teacherById.has(l.teacherId)) {
       fixedAssignments.set(l.id, l.teacherId)
@@ -92,7 +92,7 @@ export function solveTeachers(input: TeacherSolveInput, onProgress?: (p: SolvePr
 
   const withCandidates = assignable
     .map((l) => {
-      const candidates = teachers.filter((t) => t.subjectIds.includes(l.subjectId) && teacherAvailableFor(t, l))
+      const candidates = teachers.filter((t) => l.lessonIds.every((lid) => t.lessonIds.includes(lid)) && teacherAvailableFor(t, l))
       return { lesson: l, candidates }
     })
     .filter((e) => e.candidates.length > 0)
@@ -100,13 +100,13 @@ export function solveTeachers(input: TeacherSolveInput, onProgress?: (p: SolvePr
 
   const skipped = assignable.filter((l) => !withCandidates.some((w) => w.lesson.id === l.id))
   for (const l of skipped) {
-    const qualified = teachers.filter((t) => t.subjectIds.includes(l.subjectId))
+    const qualified = teachers.filter((t) => l.lessonIds.every((lid) => t.lessonIds.includes(lid)))
     if (qualified.length === 0) continue
     const hasTime = qualified.some((t) => teacherAvailableFor(t, l))
     problems.push(
       hasTime
-        ? `${l.code}: qualified teachers are fully booked or over their weekly limit`
-        : `${l.code}: all qualified teachers are unavailable at the scheduled times`
+        ? `${l.code}: related teachers are fully booked or over their weekly limit`
+        : `${l.code}: all related teachers are unavailable at the scheduled times`
     )
   }
 
@@ -121,7 +121,7 @@ export function solveTeachers(input: TeacherSolveInput, onProgress?: (p: SolvePr
   const seen = new Set<string>()
   const chosen = new Map<number, number>()
 
-  const feasible = (teacherId: number, l: PlacedLesson): boolean => {
+  const feasible = (teacherId: number, l: PlacedEntry): boolean => {
     const t = teacherById.get(teacherId)
     if (!t) return false
     const minutes = lessonMinutes(l)
